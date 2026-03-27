@@ -444,7 +444,7 @@ export async function runConfigTui(): Promise<void> {
         {
           id: "accessLevel",
           label: "Access Level",
-          description: "Inside the workspace, file tools run freely. Supervised only gates mutations outside it.",
+          description: "Inside the workspace, file tools run freely. Supervised asks approval outside it.",
           currentValue: config.restrictions.accessLevel,
           submenu: (_value, choose) =>
             new SelectDialog({
@@ -459,7 +459,7 @@ export async function runConfigTui(): Promise<void> {
                 {
                   value: "supervised",
                   label: "Supervised",
-                  description: "Workspace changes run freely; outside-workspace mutations require approval"
+                  description: "Require approval for file access outside the workspace"
                 }
               ],
               onSelect: (item) => choose(item.value),

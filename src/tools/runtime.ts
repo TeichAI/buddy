@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { BuddyConfig } from "../config/schema.js";
@@ -72,18 +73,47 @@ function normalizeDir(dirPath: string): string {
   return path.resolve(expandHome(dirPath));
 }
 
-function isPathBlocked(filePath: string, blockedDirectories: string[]): boolean {
-  const target = path.resolve(filePath);
-
-  return blockedDirectories
-    .map(normalizeDir)
-    .some((blockedDir) => target === blockedDir || target.startsWith(`${blockedDir}${path.sep}`));
-}
-
 function isPathInsideDirectory(targetPath: string, directoryPath: string): boolean {
   const target = path.resolve(targetPath);
   const directory = path.resolve(directoryPath);
   return target === directory || target.startsWith(`${directory}${path.sep}`);
+}
+
+async function resolvePolicyPath(targetPath: string): Promise<string> {
+  const absoluteTarget = path.resolve(targetPath);
+  const missingSegments: string[] = [];
+  let currentPath = absoluteTarget;
+
+  while (true) {
+    try {
+      const resolvedExistingPath = await fs.realpath(currentPath);
+      return missingSegments.length > 0
+        ? path.join(resolvedExistingPath, ...missingSegments.reverse())
+        : resolvedExistingPath;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code !== "ENOENT") {
+        throw error;
+      }
+
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) {
+        return absoluteTarget;
+      }
+
+      missingSegments.push(path.basename(currentPath));
+      currentPath = parentPath;
+    }
+  }
+}
+
+async function isPathBlocked(filePath: string, blockedDirectories: string[]): Promise<boolean> {
+  const target = await resolvePolicyPath(filePath);
+  const normalizedBlockedDirectories = await Promise.all(
+    blockedDirectories.map(async (blockedDir) => resolvePolicyPath(normalizeDir(blockedDir)))
+  );
+
+  return normalizedBlockedDirectories.some((blockedDir) => isPathInsideDirectory(target, blockedDir));
 }
 
 function resolveToolPath(inputPath: string): ResolvedPolicy {
@@ -153,6 +183,8 @@ export function createToolRuntime(
   callbacks: ToolRuntimeCallbacks,
   context: ToolContext = createToolContext()
 ): ToolRuntime {
+  const workspacePolicyPathPromise = resolvePolicyPath(workspacePath);
+
   const emit = (event: ToolRuntimeEvent) => {
     callbacks.onEvent?.(event);
   };
@@ -169,8 +201,10 @@ export function createToolRuntime(
         const { resolvedPath, displayPath } = resolveToolPath(rawPath);
         const callId = options?.callId ?? `${name}:${displayPath}`;
         const summary = summarizeMutation(name, displayPath, args);
+        const workspacePolicyPath = await workspacePolicyPathPromise;
+        const policyPath = await resolvePolicyPath(resolvedPath);
 
-        if (isPathBlocked(resolvedPath, config.restrictions.blockedDirectories)) {
+        if (await isPathBlocked(resolvedPath, config.restrictions.blockedDirectories)) {
           emit({
             id: callId,
             toolName: name,
@@ -186,15 +220,9 @@ export function createToolRuntime(
           };
         }
 
-        const requiresApproval =
-          config.restrictions.accessLevel === "supervised" &&
-          !isPathInsideDirectory(resolvedPath, workspacePath) &&
-          (name === "write_file" ||
-            name === "edit_file" ||
-            name === "delete_file" ||
-            name === "create_directory");
+        const outsideWorkspace = !isPathInsideDirectory(policyPath, workspacePolicyPath);
 
-        if (requiresApproval) {
+        if (config.restrictions.accessLevel === "supervised" && outsideWorkspace) {
           emit({
             id: callId,
             toolName: name,
@@ -202,6 +230,7 @@ export function createToolRuntime(
             summary,
             status: "awaiting_approval"
           });
+
           const approved = await callbacks.requestApproval({
             id: callId,
             toolName: name,

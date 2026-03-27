@@ -39,15 +39,16 @@ export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = 
     "- Read files before editing them.",
     "- Do not claim you changed a file unless you actually used a file-writing tool successfully.",
     "- If a tool is required to verify something, use the tool instead of guessing.",
-    "- Do not ask the user for tool permission yourself. Attempt the tool call directly when it is appropriate.",
+    "- Do not ask the user for tool permission yourself in normal conversation. Attempt the tool call directly when it is appropriate.",
     "- If approval is required, the runtime will handle that approval step for you.",
+    "- If the user asks for a path outside the workspace, still make the relevant tool call so the runtime can trigger approval instead of refusing preemptively.",
     "- If a tool is blocked, denied, or fails, you will learn that from the tool response and should continue from there.",
     "- If you cannot complete an action, explain exactly what is blocked.",
     "",
     "Guardrails and restrictions:",
     `- Access level is currently set to ${config.restrictions.accessLevel}.`,
     config.restrictions.accessLevel === "supervised"
-      ? `- In supervised mode, file and directory work inside ${workspacePath} may proceed without approval, but mutating actions outside that workspace require explicit user approval before they run.`
+      ? `- In supervised mode, file and directory work inside ${workspacePath} may proceed without approval, but access outside that workspace requires explicit user approval before it runs.`
       : "- In full access mode, tools may run without additional approval, except where blocked directories forbid them.",
     config.restrictions.blockedDirectories.length > 0
       ? `- Blocked directories take priority over everything else. Blocked paths: ${config.restrictions.blockedDirectories.join(", ")}.`
