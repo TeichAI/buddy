@@ -59,14 +59,14 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     return;
   }
 
-  if (args[0] === "server") {
-    await runServerCommand(args[1]);
+  if (args[0] === "config" || args.includes("--config")) {
+    await maybeStartConfiguredLocalServer();
+    await runConfigTui();
     return;
   }
 
-  if (args.includes("--config")) {
-    await maybeStartConfiguredLocalServer();
-    await runConfigTui();
+  if (args[0] === "server") {
+    await runServerCommand(args[1]);
     return;
   }
 

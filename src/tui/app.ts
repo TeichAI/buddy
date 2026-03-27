@@ -234,7 +234,7 @@ export async function runChatTui(): Promise<void> {
     subtitle.setText(theme.muted(buildMetaLine(config, status)));
     inputLabel.setText(theme.accent(`${config.personalization.userName || "you"} >`));
     helpLine.setText(
-      theme.muted("Enter send  ·  /new chat  ·  /switch chats  ·  /delete chats  ·  buddy --config settings  ·  /exit quit")
+      theme.muted("Enter send  ·  /new chat  ·  /switch chats  ·  /delete chats  ·  buddy config settings  ·  /exit quit")
     );
     tui.requestRender();
   };
@@ -517,8 +517,8 @@ export async function runChatTui(): Promise<void> {
     }
 
     if (command === "/config") {
-      chatLog.addSystem("Settings moved to a standalone TUI. Run `buddy --config`.");
-      renderChrome("use --config");
+      chatLog.addSystem("Settings moved to a standalone TUI. Run `buddy config`.");
+      renderChrome("use config");
       return;
     }
 
