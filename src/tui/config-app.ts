@@ -1,7 +1,7 @@
 import type { Component, SettingItem } from "@mariozechner/pi-tui";
 import { Container, ProcessTerminal, SettingsList, TUI, Text } from "@mariozechner/pi-tui";
 import type { BuddyConfig } from "../config/schema.js";
-import { loadConfig, saveConfig } from "../config/store.js";
+import { BuddySocketClient } from "../server/client.js";
 import { SelectDialog } from "./components/select-dialog.js";
 import { TextEditorDialog } from "./components/text-editor-dialog.js";
 import { settingsTheme, theme } from "./theme.js";
@@ -62,7 +62,8 @@ function createPage(params: { title: string; subtitle: string; list: SettingsLis
 }
 
 export async function runConfigTui(): Promise<void> {
-  let config = await loadConfig();
+  const socketClient = new BuddySocketClient();
+  let config = await socketClient.getConfig();
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal, true);
   const root = new Container();
@@ -80,14 +81,21 @@ export async function runConfigTui(): Promise<void> {
   };
 
   const persist = async (nextConfig: BuddyConfig): Promise<void> => {
-    config = nextConfig;
-    await saveConfig(nextConfig);
-    rootList.updateValue("providers", providersSummary(nextConfig));
-    rootList.updateValue("personalization", personalizationSummary(nextConfig));
-    rootList.updateValue("channels", channelsSummary(nextConfig));
-    rootList.updateValue("restrictions", restrictionsSummary(nextConfig));
-    statusLine.setText(theme.success("Saved to ~/.buddy/config.json"));
+    config = await socketClient.updateConfig(nextConfig);
+    rootList.updateValue("providers", providersSummary(config));
+    rootList.updateValue("personalization", personalizationSummary(config));
+    rootList.updateValue("channels", channelsSummary(config));
+    rootList.updateValue("restrictions", restrictionsSummary(config));
+    statusLine.setText(theme.success("Saved to the buddy server"));
     tui.requestRender();
+  };
+  const reportPersistError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    statusLine.setText(theme.error(`Error: ${message}`));
+    tui.requestRender();
+  };
+  const persistLater = (nextConfig: BuddyConfig) => {
+    void persist(nextConfig).catch(reportPersistError);
   };
 
   const buildProvidersPage = (done: (value?: string) => void): Component => {
@@ -114,7 +122,7 @@ export async function runConfigTui(): Promise<void> {
         {
           id: "baseUrl",
           label: "Base URL",
-          description: "Stored in ~/.buddy/config.json",
+          description: "Stored in the server config",
           currentValue: config.providers.baseUrl || "unset",
           submenu: (value, choose) =>
             new TextEditorDialog({
@@ -129,16 +137,16 @@ export async function runConfigTui(): Promise<void> {
         {
           id: "apiKey",
           label: "API Key",
-          description: "Warning: stored in plain text",
+          description: "Warning: stored in plain text on the server",
           currentValue: config.providers.apiKey ? "configured" : "not set",
           submenu: (_value, choose) =>
             new TextEditorDialog({
               tui,
               title: "API Key",
-              subtitle: "Warning: stored in plain text in ~/.buddy/config.json",
+              subtitle: "Warning: stored in plain text in the server config",
               initialValue: config.providers.apiKey,
               onSave: (newValue) => {
-                void persist({
+                persistLater({
                   ...config,
                   providers: {
                     ...config.providers,
@@ -189,7 +197,7 @@ export async function runConfigTui(): Promise<void> {
           } as const;
 
           const preset = presetMap[newValue as keyof typeof presetMap];
-          void persist({
+          persistLater({
             ...config,
             providers: {
               ...config.providers,
@@ -206,7 +214,7 @@ export async function runConfigTui(): Promise<void> {
         }
 
         if (id === "baseUrl" || id === "model") {
-          void persist({
+          persistLater({
             ...config,
             providers: {
               ...config.providers,
@@ -272,7 +280,7 @@ export async function runConfigTui(): Promise<void> {
               subtitle: "Plain text behavior and tone instructions",
               initialValue: config.personalization.systemInstructions,
               onSave: (newValue) => {
-                void persist({
+                persistLater({
                   ...config,
                   personalization: {
                     ...config.personalization,
@@ -292,7 +300,7 @@ export async function runConfigTui(): Promise<void> {
           return;
         }
 
-        void persist({
+        persistLater({
           ...config,
           personalization: {
             ...config.personalization,
@@ -325,16 +333,16 @@ export async function runConfigTui(): Promise<void> {
         {
           id: "botToken",
           label: "Bot Token",
-          description: "Stored in plain text",
+          description: "Stored in plain text on the server",
           currentValue: config.channels.discord.botToken ? "configured" : "not set",
           submenu: (_value, choose) =>
             new TextEditorDialog({
               tui,
               title: "Discord Bot Token",
-              subtitle: "Warning: stored in plain text in ~/.buddy/config.json",
+              subtitle: "Warning: stored in plain text in the server config",
               initialValue: config.channels.discord.botToken,
               onSave: (newValue) => {
-                void persist({
+                persistLater({
                   ...config,
                   channels: {
                     discord: {
@@ -382,7 +390,7 @@ export async function runConfigTui(): Promise<void> {
                   .map((value) => value.trim())
                   .filter(Boolean);
 
-                void persist({
+                persistLater({
                   ...config,
                   channels: {
                     discord: {
@@ -401,7 +409,7 @@ export async function runConfigTui(): Promise<void> {
       settingsTheme,
       (id, newValue) => {
         if (id === "enabled") {
-          void persist({
+          persistLater({
             ...config,
             channels: {
               discord: {
@@ -415,7 +423,7 @@ export async function runConfigTui(): Promise<void> {
         }
 
         if (id === "applicationId") {
-          void persist({
+          persistLater({
             ...config,
             channels: {
               discord: {
@@ -485,7 +493,7 @@ export async function runConfigTui(): Promise<void> {
                   .map((line) => line.trim())
                   .filter(Boolean);
 
-                void persist({
+                persistLater({
                   ...config,
                   restrictions: {
                     ...config.restrictions,
@@ -505,7 +513,7 @@ export async function runConfigTui(): Promise<void> {
           return;
         }
 
-        void persist({
+        persistLater({
           ...config,
           restrictions: {
             ...config.restrictions,
@@ -576,23 +584,30 @@ export async function runConfigTui(): Promise<void> {
   tui.setFocus(rootList);
 
   terminal.setTitle("buddy config");
-  statusLine.setText(theme.muted("Settings are saved to ~/.buddy/config.json"));
+  statusLine.setText(theme.muted("Settings are loaded from the buddy server."));
 
-  await new Promise<void>((resolve) => {
-    const sigintHandler = () => requestExit();
-    const sigtermHandler = () => requestExit();
+  try {
+    await new Promise<void>((resolve) => {
+      const sigintHandler = () => requestExit();
+      const sigtermHandler = () => requestExit();
 
-    process.on("SIGINT", sigintHandler);
-    process.on("SIGTERM", sigtermHandler);
+      process.on("SIGINT", sigintHandler);
+      process.on("SIGTERM", sigtermHandler);
 
-    const originalStop = tui.stop.bind(tui);
-    tui.stop = () => {
-      originalStop();
-      process.removeListener("SIGINT", sigintHandler);
-      process.removeListener("SIGTERM", sigtermHandler);
-      resolve();
-    };
+      const originalStop = tui.stop.bind(tui);
+      tui.stop = () => {
+        void (async () => {
+          await socketClient.close();
+          originalStop();
+          process.removeListener("SIGINT", sigintHandler);
+          process.removeListener("SIGTERM", sigtermHandler);
+          resolve();
+        })();
+      };
 
-    tui.start();
-  });
+      tui.start();
+    });
+  } finally {
+    await socketClient.close();
+  }
 }

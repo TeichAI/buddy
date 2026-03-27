@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { loadServerSecretToken } from "../config/store.js";
+import { localWebsocketUrl } from "../utils/paths.js";
 import { BuddySocketClient } from "./client.js";
 
 function sleep(ms: number): Promise<void> {
@@ -10,8 +12,15 @@ function canSpawnBackgroundServer(): boolean {
   return path.extname(process.argv[1] || "") === ".js";
 }
 
+function createLocalServerClient(): BuddySocketClient {
+  return new BuddySocketClient(async () => ({
+    serverUrl: localWebsocketUrl,
+    authKey: await loadServerSecretToken()
+  }));
+}
+
 export async function getServerStatus(): Promise<{ running: boolean; pid?: number }> {
-  const client = new BuddySocketClient();
+  const client = createLocalServerClient();
 
   try {
     const status = await client.getStatus();
@@ -28,7 +37,7 @@ export async function getServerStatus(): Promise<{ running: boolean; pid?: numbe
 }
 
 export async function stopServer(): Promise<boolean> {
-  const client = new BuddySocketClient();
+  const client = createLocalServerClient();
 
   try {
     await client.shutdownServer();

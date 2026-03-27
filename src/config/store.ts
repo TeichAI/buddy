@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { buddyHome, configPath, secretTokenPath, workspacePath } from "../utils/paths.js";
+import { buddyHome, serverConfigPath, serverSecretTokenPath, workspacePath } from "../utils/paths.js";
 import { defaultConfig } from "./defaults.js";
 import type { BuddyConfig } from "./schema.js";
 
@@ -35,11 +35,11 @@ export async function ensureBuddyHome(): Promise<void> {
   await fs.mkdir(workspacePath, { recursive: true });
 }
 
-export async function ensureSecretToken(): Promise<string> {
+export async function ensureServerSecretToken(): Promise<string> {
   await ensureBuddyHome();
 
   try {
-    const token = (await fs.readFile(secretTokenPath, "utf8")).trim();
+    const token = (await fs.readFile(serverSecretTokenPath, "utf8")).trim();
     if (token) {
       return token;
     }
@@ -51,22 +51,22 @@ export async function ensureSecretToken(): Promise<string> {
   }
 
   const token = crypto.randomBytes(32).toString("hex");
-  await fs.writeFile(secretTokenPath, `${token}\n`, {
+  await fs.writeFile(serverSecretTokenPath, `${token}\n`, {
     encoding: "utf8",
     mode: 0o600
   });
   return token;
 }
 
-export async function loadSecretToken(): Promise<string> {
-  return ensureSecretToken();
+export async function loadServerSecretToken(): Promise<string> {
+  return ensureServerSecretToken();
 }
 
 export async function loadConfig(): Promise<BuddyConfig> {
   await ensureBuddyHome();
 
   try {
-    const raw = await fs.readFile(configPath, "utf8");
+    const raw = await fs.readFile(serverConfigPath, "utf8");
     return mergeConfig(JSON.parse(raw) as Partial<BuddyConfig>);
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
@@ -81,5 +81,5 @@ export async function loadConfig(): Promise<BuddyConfig> {
 
 export async function saveConfig(config: BuddyConfig): Promise<void> {
   await ensureBuddyHome();
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await fs.writeFile(serverConfigPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
