@@ -15,7 +15,10 @@ function personalizationSummary(config: BuddyConfig): string {
 }
 
 function channelsSummary(config: BuddyConfig): string {
-  return config.channels.discord.enabled ? "Discord enabled" : "Discord disabled";
+  const allowed = config.channels.discord.allowedUsernames.length;
+  return config.channels.discord.enabled
+    ? `Discord enabled / ${allowed} allowed ${allowed === 1 ? "user" : "users"}`
+    : "Discord disabled";
 }
 
 function restrictionsSummary(config: BuddyConfig): string {
@@ -361,17 +364,35 @@ export async function runConfigTui(): Promise<void> {
             })
         },
         {
-          id: "guildId",
-          label: "Guild ID",
-          description: "Discord server ID",
-          currentValue: config.channels.discord.guildId || "unset",
-          submenu: (value, choose) =>
+          id: "allowedUsernames",
+          label: "Allowed Usernames",
+          description: "One Discord username per line. DMs, mentions, and slash commands are limited to this list.",
+          currentValue: config.channels.discord.allowedUsernames.length
+            ? `${config.channels.discord.allowedUsernames.length} configured`
+            : "none",
+          submenu: (_value, choose) =>
             new TextEditorDialog({
               tui,
-              title: "Discord Guild ID",
-              subtitle: "Optional, but useful for scoped setup",
-              initialValue: value === "unset" ? "" : value,
-              onSave: (newValue) => choose(newValue),
+              title: "Allowed Discord Usernames",
+              subtitle: "Enter one Discord username per line.",
+              initialValue: config.channels.discord.allowedUsernames.join("\n"),
+              onSave: (newValue) => {
+                const allowedUsernames = newValue
+                  .split(/\r?\n/)
+                  .map((value) => value.trim())
+                  .filter(Boolean);
+
+                void persist({
+                  ...config,
+                  channels: {
+                    discord: {
+                      ...config.channels.discord,
+                      allowedUsernames
+                    }
+                  }
+                });
+                choose(allowedUsernames.length ? `${allowedUsernames.length} configured` : "none");
+              },
               onCancel: () => choose()
             })
         }
@@ -393,7 +414,7 @@ export async function runConfigTui(): Promise<void> {
           return;
         }
 
-        if (id === "applicationId" || id === "guildId") {
+        if (id === "applicationId") {
           void persist({
             ...config,
             channels: {
@@ -412,7 +433,7 @@ export async function runConfigTui(): Promise<void> {
 
     return createPage({
       title: "Channels",
-      subtitle: "Discord configuration for the first supported channel. Esc returns to sections.",
+      subtitle: "Discord configuration, including allowed usernames. Esc returns to sections.",
       list
     });
   };

@@ -1,7 +1,9 @@
 import type { BuddyConfig } from "../config/schema.js";
 import { workspacePath } from "../utils/paths.js";
 
-export function buildSystemPrompt(config: BuddyConfig): string {
+export type PromptChannel = "local" | "discord";
+
+export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = "local"): string {
   const botName = config.personalization.botName || "buddy";
   const userName = config.personalization.userName.trim();
   const instructions = config.personalization.systemInstructions.trim();
@@ -21,6 +23,8 @@ export function buildSystemPrompt(config: BuddyConfig): string {
     "- You should act like a capable local assistant that can inspect and modify files through tools when those tools are available.",
     `- Your default workspace is ${workspacePath}. Unless the user asks otherwise, you should treat that as the main place to read, create, edit, and organize files.`,
     "- When a file path is relative, treat it as relative to the workspace by default.",
+    "- If the user says 'desktop', assume they mean this assistant's own desktop/local environment by default, not the OS Desktop folder.",
+    "- Do not interpret generic references to 'desktop' as `~/Desktop` unless the user explicitly asks for the Desktop folder or gives a concrete path there.",
     "",
     "Available file tools:",
     "- `read_file`: read a file before making decisions about its contents.",
@@ -55,6 +59,10 @@ export function buildSystemPrompt(config: BuddyConfig): string {
     "- If the user asks for an explanation, give a structured explanation.",
     "- If the user asks for help writing or editing something, provide concrete output rather than abstract advice.",
     "- If there is uncertainty, say what is certain and what is uncertain.",
+    channel === "discord" ? "- You are replying inside Discord, so avoid tables and other non-Discord markdown." : undefined,
+    channel === "discord"
+      ? "- Prefer short paragraphs, simple bullets, inline code, and fenced code blocks. Do not use markdown tables, footnotes, HTML, or other formatting that may render poorly in Discord."
+      : undefined,
     "",
     "Behavior defaults:",
     "- Be friendly, calm, and competent.",

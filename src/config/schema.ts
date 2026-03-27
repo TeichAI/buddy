@@ -19,7 +19,7 @@ export interface DiscordChannelConfig {
   enabled: boolean;
   botToken: string;
   applicationId: string;
-  guildId: string;
+  allowedUsernames: string[];
 }
 
 export interface ChannelsConfig {

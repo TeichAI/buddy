@@ -4,6 +4,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { loadConfig } from "../config/store.js";
 import type { BuddyConfig } from "../config/schema.js";
 import { BuddySocketClient } from "../server/client.js";
+import { getCliCurrentConversationId, setCliCurrentConversationId } from "../current/store.js";
 import { ChatLog } from "./components/chat-log.js";
 import { ApprovalDialog } from "./components/approval-dialog.js";
 import { CustomEditor } from "./components/custom-editor.js";
@@ -119,7 +120,28 @@ const slashCommands = [
 
 export async function runChatTui(): Promise<void> {
   let config = await loadConfig();
-  let conversation = (await loadLatestConversation()) ?? (await createConversation());
+  const currentConversationId = await getCliCurrentConversationId();
+  let conversation: PersistedConversation;
+
+  if (currentConversationId) {
+    try {
+      conversation = await loadConversation(currentConversationId);
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code === "ENOENT") {
+        conversation = {
+          ...(await createConversation()),
+          id: currentConversationId
+        };
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    conversation = (await loadLatestConversation()) ?? (await createConversation());
+  }
+
+  await setCliCurrentConversationId(conversation.id);
   let messages: ChatCompletionMessageParam[] = conversation.messages;
   let conversationSaved = conversation.messages.length > 0;
 
@@ -212,12 +234,14 @@ export async function runChatTui(): Promise<void> {
     conversation = await saveConversation(nextConversation);
     messages = conversation.messages;
     conversationSaved = true;
+    await setCliCurrentConversationId(conversation.id);
   };
 
   const switchConversation = async (nextConversation: PersistedConversation, status = "idle"): Promise<void> => {
     conversation = nextConversation;
     messages = nextConversation.messages;
     conversationSaved = nextConversation.messages.length > 0;
+    await setCliCurrentConversationId(nextConversation.id);
     rebuildChatLog({
       chatLog,
       conversation: nextConversation,
@@ -339,6 +363,7 @@ export async function runChatTui(): Promise<void> {
       } else {
         conversation = clearedConversation;
         messages = clearedConversation.messages;
+        await setCliCurrentConversationId(conversation.id);
       }
       renderChrome("chat cleared");
       return;
