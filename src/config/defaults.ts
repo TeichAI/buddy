@@ -52,5 +52,10 @@ export const defaultConfig: BuddyConfig = {
   restrictions: {
     blockedDirectories: [],
     accessLevel: "supervised"
+  },
+  tools: {
+    webSearch: {
+      enabled: true
+    }
   }
 };

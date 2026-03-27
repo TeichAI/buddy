@@ -12,7 +12,7 @@ export interface AgentTurnResult {
   assistantText: string;
 }
 
-const toolDefinitions = [
+const fileToolDefinitions = [
   {
     type: "function" as const,
     function: {
@@ -107,6 +107,32 @@ const toolDefinitions = [
   }
 ];
 
+function buildToolDefinitions(config: BuddyConfig) {
+  if (!config.tools.webSearch.enabled) {
+    return fileToolDefinitions;
+  }
+
+  return [
+    ...fileToolDefinitions,
+    {
+      type: "function" as const,
+      function: {
+        name: "web_search",
+        description:
+          "Search the web with DuckDuckGo HTML, then fetch and return readable text from the top 3 result pages.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search query to run on the web." }
+          },
+          required: ["query"],
+          additionalProperties: false
+        }
+      }
+    }
+  ];
+}
+
 function assistantContentToText(content: unknown): string {
   if (typeof content === "string") {
     return content.trim();
@@ -158,7 +184,7 @@ export async function runAgentTurn(params: {
     const response = await client.chat.completions.create({
       model: config.providers.model,
       messages: workingMessages,
-      tools: toolDefinitions,
+      tools: buildToolDefinitions(config),
       tool_choice: "auto",
       temperature: 0.3
     });

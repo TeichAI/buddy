@@ -260,7 +260,10 @@ export async function runChatTui(): Promise<void> {
     renderChrome(status);
   };
 
-  const confirmConversationDeletion = async (target: PersistedConversation): Promise<boolean> =>
+  const confirmConversationDeletion = async (
+    target: PersistedConversation,
+    focusAfterClose: Component = editor
+  ): Promise<boolean> =>
     await new Promise((resolve) => {
       const dialog = new SelectDialog({
         title: "Delete Conversation",
@@ -279,12 +282,12 @@ export async function runChatTui(): Promise<void> {
         ],
         onSelect: (item) => {
           overlay.hide();
-          tui.setFocus(editor);
+          tui.setFocus(focusAfterClose);
           resolve(item.value === "delete");
         },
         onCancel: () => {
           overlay.hide();
-          tui.setFocus(editor);
+          tui.setFocus(focusAfterClose);
           resolve(false);
         }
       });
@@ -344,7 +347,7 @@ export async function runChatTui(): Promise<void> {
                   return;
                 }
 
-                const confirmed = await confirmConversationDeletion(selected);
+                const confirmed = await confirmConversationDeletion(selected, dialog);
                 if (!confirmed) {
                   renderChrome(isBusy ? "busy" : "idle");
                   return;
