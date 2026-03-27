@@ -21,6 +21,7 @@ import {
   type PersistedConversation
 } from "../conversations/store.js";
 import { ConversationSelectDialog } from "./components/conversation-select-dialog.js";
+import { SelectDialog } from "./components/select-dialog.js";
 
 class Divider implements Component {
   invalidate(): void {}
@@ -50,7 +51,7 @@ function buildMetaLine(config: BuddyConfig, status: string): string {
 }
 
 function buildHelpLine(): string {
-  return "Enter send  ·  /new chat  ·  /switch chats  ·  /clear reset  ·  /exit quit";
+  return "Enter send  ·  /new chat  ·  /switch chats  ·  /delete chats  ·  /clear reset  ·  /exit quit";
 }
 
 function messageText(content: ChatCompletionMessageParam["content"] | null | undefined): string {
@@ -83,6 +84,14 @@ function formatTimestamp(value: string): string {
   });
 }
 
+function buildConversationItems(conversations: PersistedConversation[]) {
+  return conversations.map((entry) => ({
+    value: entry.id,
+    label: conversationDisplayName(entry),
+    description: `${formatTimestamp(entry.updatedAt)}  ·  ${entry.id}`
+  }));
+}
+
 function rebuildChatLog(params: {
   chatLog: ChatLog;
   conversation: PersistedConversation;
@@ -111,6 +120,7 @@ function rebuildChatLog(params: {
 const slashCommands = [
   { name: "clear", description: "Reset the current chat transcript." },
   { name: "config", description: "Show how to open the configuration UI." },
+  { name: "delete", description: "Delete a saved conversation." },
   { name: "help", description: "Show available chat shortcuts." },
   { name: "new", description: "Start a fresh conversation." },
   { name: "status", description: "Show whether the assistant is idle or busy." },
@@ -225,7 +235,7 @@ export async function runChatTui(): Promise<void> {
     subtitle.setText(theme.muted(buildMetaLine(config, status)));
     inputLabel.setText(theme.accent(`${config.personalization.userName || "you"} >`));
     helpLine.setText(
-      theme.muted("Enter send  ·  /new chat  ·  /switch chats  ·  buddy --config settings  ·  /exit quit")
+      theme.muted("Enter send  ·  /new chat  ·  /switch chats  ·  /delete chats  ·  buddy --config settings  ·  /exit quit")
     );
     tui.requestRender();
   };
@@ -251,26 +261,70 @@ export async function runChatTui(): Promise<void> {
     renderChrome(status);
   };
 
+  const confirmConversationDeletion = async (target: PersistedConversation): Promise<boolean> =>
+    await new Promise((resolve) => {
+      const dialog = new SelectDialog({
+        title: "Delete Conversation",
+        subtitle: `${conversationDisplayName(target)}  ·  ${target.id}`,
+        items: [
+          {
+            value: "delete",
+            label: "Yes, delete",
+            description: "Permanently remove this chat"
+          },
+          {
+            value: "cancel",
+            label: "Cancel",
+            description: "Keep this chat"
+          }
+        ],
+        onSelect: (item) => {
+          overlay.hide();
+          tui.setFocus(editor);
+          resolve(item.value === "delete");
+        },
+        onCancel: () => {
+          overlay.hide();
+          tui.setFocus(editor);
+          resolve(false);
+        }
+      });
+
+      const overlay = tui.showOverlay(dialog, {
+        anchor: "center",
+        width: "72%",
+        maxHeight: "40%"
+      });
+    });
+
+  const deleteSavedConversation = async (deletedId: string): Promise<PersistedConversation[]> => {
+    await deleteConversation(deletedId);
+
+    const remainingConversations = await listConversations();
+    if (deletedId === conversation.id) {
+      const fallbackConversation = remainingConversations[0] ?? (await createConversation());
+      await switchConversation(fallbackConversation, "deleted conversation");
+      return remainingConversations;
+    }
+
+    renderChrome("deleted conversation");
+    return remainingConversations;
+  };
+
   const showConversationSelector = async (): Promise<void> =>
     await new Promise((resolve) => {
       void (async () => {
-        const conversations = await listConversations();
-        if (conversations.length === 0) {
+        let visibleConversations = await listConversations();
+        if (visibleConversations.length === 0) {
           await switchConversation(await createConversation(), "new chat");
           resolve();
           return;
         }
 
-        const items = conversations.map((entry) => ({
-          value: entry.id,
-          label: conversationDisplayName(entry),
-          description: `${formatTimestamp(entry.updatedAt)}  ·  ${entry.id}`
-        }));
-
         const dialog = new ConversationSelectDialog({
           title: "Switch Conversation",
           subtitle: "Select a saved chat to reopen.",
-          items,
+          items: buildConversationItems(visibleConversations),
           onSelect: (item) => {
             overlay.hide();
             tui.setFocus(editor);
@@ -284,31 +338,29 @@ export async function runChatTui(): Promise<void> {
             void (async () => {
               try {
                 const deletedId = String(item.value);
-                await deleteConversation(deletedId);
-
-                if (deletedId === conversation.id) {
-                  const fallbackConversation = (await loadLatestConversation()) ?? (await createConversation());
-                  await switchConversation(fallbackConversation, "deleted conversation");
+                const selected = visibleConversations.find((entry) => entry.id === deletedId);
+                if (!selected) {
+                  chatLog.addSystem("Error: That chat is no longer available.");
+                  renderChrome("error");
+                  return;
                 }
 
-                const remainingConversations = await listConversations();
+                const confirmed = await confirmConversationDeletion(selected);
+                if (!confirmed) {
+                  renderChrome(isBusy ? "busy" : "idle");
+                  return;
+                }
+
+                const remainingConversations = await deleteSavedConversation(deletedId);
                 if (remainingConversations.length === 0) {
                   overlay.hide();
                   tui.setFocus(editor);
-                  if (deletedId !== conversation.id) {
-                    await switchConversation(await createConversation(), "deleted conversation");
-                  }
                   resolve();
                   return;
                 }
 
-                dialog.setItems(
-                  remainingConversations.map((entry) => ({
-                    value: entry.id,
-                    label: conversationDisplayName(entry),
-                    description: `${formatTimestamp(entry.updatedAt)}  ·  ${entry.id}`
-                  }))
-                );
+                visibleConversations = remainingConversations;
+                dialog.setItems(buildConversationItems(remainingConversations));
                 renderChrome("deleted conversation");
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -333,6 +385,74 @@ export async function runChatTui(): Promise<void> {
       })();
     });
 
+  const showDeleteConversationSelector = async (): Promise<void> =>
+    await new Promise((resolve) => {
+      const openSelector = async (subtitle = "Select a saved chat to delete."): Promise<void> => {
+        const conversations = await listConversations();
+        if (conversations.length === 0) {
+          tui.setFocus(editor);
+          renderChrome("no saved chats");
+          resolve();
+          return;
+        }
+
+        const dialog = new SelectDialog({
+          title: "Delete Conversation",
+          subtitle,
+          items: buildConversationItems(conversations),
+          onSelect: (item) => {
+            overlay.hide();
+            void (async () => {
+              try {
+                const selected = conversations.find((entry) => entry.id === String(item.value));
+                if (!selected) {
+                  tui.setFocus(editor);
+                  renderChrome("error");
+                  resolve();
+                  return;
+                }
+
+                const confirmed = await confirmConversationDeletion(selected);
+                if (!confirmed) {
+                  await openSelector("Deletion canceled. Select a saved chat to delete.");
+                  return;
+                }
+
+                const remainingConversations = await deleteSavedConversation(selected.id);
+                if (remainingConversations.length === 0) {
+                  tui.setFocus(editor);
+                  resolve();
+                  return;
+                }
+
+                await openSelector(`Deleted ${conversationDisplayName(selected)}. Select another chat to delete.`);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                chatLog.addSystem(`Error: ${message}`);
+                tui.setFocus(editor);
+                renderChrome("error");
+                resolve();
+              }
+            })();
+          },
+          onCancel: () => {
+            overlay.hide();
+            tui.setFocus(editor);
+            renderChrome(isBusy ? "busy" : "idle");
+            resolve();
+          }
+        });
+
+        const overlay = tui.showOverlay(dialog, {
+          anchor: "center",
+          width: "72%",
+          maxHeight: "60%"
+        });
+      };
+
+      void openSelector();
+    });
+
   const requestExit = () => {
     if (exiting) {
       return;
@@ -346,7 +466,7 @@ export async function runChatTui(): Promise<void> {
   const handleCommand = async (commandLine: string): Promise<void> => {
     const [command] = commandLine.split(/\s+/, 1);
 
-    if (isBusy && ["/clear", "/new", "/switch"].includes(command)) {
+    if (isBusy && ["/clear", "/new", "/switch", "/delete"].includes(command)) {
       renderChrome("busy");
       return;
     }
@@ -381,6 +501,16 @@ export async function runChatTui(): Promise<void> {
       }
 
       await showConversationSelector();
+      return;
+    }
+
+    if (command === "/delete") {
+      if (isBusy) {
+        renderChrome("busy");
+        return;
+      }
+
+      await showDeleteConversationSelector();
       return;
     }
 

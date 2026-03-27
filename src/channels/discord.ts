@@ -20,7 +20,12 @@ import {
   type StringSelectMenuInteraction,
   type User
 } from "discord.js";
-import { conversationDisplayName, saveConversation, type PersistedConversation } from "../conversations/store.js";
+import {
+  conversationDisplayName,
+  deleteConversation,
+  saveConversation,
+  type PersistedConversation
+} from "../conversations/store.js";
 import { loadConfig } from "../config/store.js";
 import type { DiscordChannelConfig } from "../config/schema.js";
 import { executeChatTurn } from "../server/chat.js";
@@ -38,12 +43,13 @@ interface DiscordChannelRuntime {
   close(): Promise<void>;
 }
 
-type SupportedCommand = "clear" | "new" | "switch" | "config" | "help" | "status" | "exit";
+type SupportedCommand = "clear" | "new" | "switch" | "delete" | "config" | "help" | "status" | "exit";
 
 const supportedCommandNames = new Set<SupportedCommand>([
   "clear",
   "new",
   "switch",
+  "delete",
   "config",
   "help",
   "status",
@@ -54,6 +60,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName("clear").setDescription("Clear the current Discord conversation transcript."),
   new SlashCommandBuilder().setName("new").setDescription("Prepare a fresh Discord conversation."),
   new SlashCommandBuilder().setName("switch").setDescription("Switch to another saved conversation from a dropdown."),
+  new SlashCommandBuilder().setName("delete").setDescription("Delete a saved conversation from a dropdown."),
   new SlashCommandBuilder().setName("config").setDescription("Show how to edit buddy configuration."),
   new SlashCommandBuilder().setName("help").setDescription("Show buddy Discord help."),
   new SlashCommandBuilder().setName("status").setDescription("Show whether this Discord conversation is busy or idle."),
@@ -62,11 +69,28 @@ const slashCommands = [
 
 const busyContexts = new Set<string>();
 const switchMenuPrefix = "buddy-switch";
+const deleteMenuPrefix = "buddy-delete";
+const deleteConfirmPrefix = "buddy-delete-confirm";
 const approvalActionPrefix = "buddy-approval";
 const pendingSwitchMenus = new Map<
   string,
   {
     contextKey: string;
+    userId: string;
+  }
+>();
+const pendingDeleteMenus = new Map<
+  string,
+  {
+    contextKey: string;
+    userId: string;
+  }
+>();
+const pendingDeleteConfirmations = new Map<
+  string,
+  {
+    contextKey: string;
+    conversationId: string;
     userId: string;
   }
 >();
@@ -83,6 +107,8 @@ interface ToolTranscriptState {
   order: string[];
   latestById: Map<string, ToolRuntimeEvent>;
 }
+
+type ComponentInteraction = StringSelectMenuInteraction | ButtonInteraction;
 
 function normalizeValue(value: string): string {
   return value.trim().toLowerCase();
@@ -277,16 +303,24 @@ async function respondToInteraction(
   }
 }
 
-async function respondToSelectInteraction(
-  interaction: StringSelectMenuInteraction,
-  content: string
+async function respondToComponentInteraction(
+  interaction: ComponentInteraction,
+  params: {
+    content: string;
+    components?: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
+  }
 ): Promise<void> {
+  const payload = {
+    content: params.content,
+    components: params.components ?? []
+  };
+
   if (interaction.deferred || interaction.replied) {
-    await interaction.editReply({ content, components: [] });
+    await interaction.editReply(payload);
     return;
   }
 
-  await interaction.update({ content, components: [] });
+  await interaction.update(payload);
 }
 
 async function sendApprovalEmbed(params: {
@@ -344,8 +378,8 @@ async function sendApprovalEmbed(params: {
 function buildHelpText(botName: string): string {
   return [
     `${botName} supports DMs, server mentions, and slash commands.`,
-    "Commands: /clear, /new, /switch, /config, /help, /status, /exit",
-    "For message-based commands, `/switch <number|id>` still works as a plain-text fallback.",
+    "Commands: /clear, /new, /switch, /delete, /config, /help, /status, /exit",
+    "For message-based commands, `/switch <number|id>` still works as a plain-text fallback. Use `/delete` from the slash-command menu.",
     "In servers, mention the bot with your message. In DMs, just send the message directly."
   ].join("\n");
 }
@@ -354,7 +388,7 @@ function buildSwitchOptions(params: {
   currentConversationId: string | null;
   conversations: PersistedConversation[];
 }): APISelectMenuOption[] {
-  return params.conversations.slice(0, 25).map((conversation, index) => ({
+  return params.conversations.slice(0, 25).map((conversation) => ({
     label: truncateText(conversationDisplayName(conversation), 100),
     description: truncateText(
       `${conversation.id === params.currentConversationId ? "Current · " : ""}${formatTimestamp(conversation.updatedAt)} · ${conversation.id}`,
@@ -362,6 +396,20 @@ function buildSwitchOptions(params: {
     ),
     value: conversation.id,
     default: conversation.id === params.currentConversationId
+  }));
+}
+
+function buildDeleteOptions(params: {
+  currentConversationId: string | null;
+  conversations: PersistedConversation[];
+}): APISelectMenuOption[] {
+  return params.conversations.slice(0, 25).map((conversation) => ({
+    label: truncateText(conversationDisplayName(conversation), 100),
+    description: truncateText(
+      `${conversation.id === params.currentConversationId ? "Current · " : ""}${formatTimestamp(conversation.updatedAt)} · ${conversation.id}`,
+      100
+    ),
+    value: conversation.id
   }));
 }
 
@@ -409,6 +457,113 @@ async function openSwitchMenu(params: {
     components: [row],
     ephemeral: true
   });
+}
+
+function buildDeleteConfirmationContent(params: {
+  conversation: PersistedConversation;
+  chatId: string | null;
+}): string {
+  return appendChatIdFooter(
+    `Delete ${conversationDisplayName(params.conversation)} (${params.conversation.id})?\n\nThis cannot be undone.`,
+    params.chatId
+  );
+}
+
+async function buildDeleteMenuResponse(params: {
+  contextKey: string;
+  userId: string;
+  notice?: string;
+}): Promise<{
+  content: string;
+  components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>>;
+}> {
+  const conversations = await listDiscordConversations();
+  const chatId = await getActiveDiscordConversationId(params.contextKey);
+  if (conversations.length === 0) {
+    return {
+      content: appendChatIdFooter(params.notice ?? "No saved conversations exist yet.", chatId),
+      components: []
+    };
+  }
+
+  const currentConversationId = await getActiveDiscordConversationId(params.contextKey);
+  const menuId = `${deleteMenuPrefix}:${crypto.randomUUID()}`;
+  pendingDeleteMenus.set(menuId, {
+    contextKey: params.contextKey,
+    userId: params.userId
+  });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(menuId)
+    .setPlaceholder("Choose a conversation to delete")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      buildDeleteOptions({
+        currentConversationId,
+        conversations
+      })
+    );
+
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+  return {
+    content: appendChatIdFooter(params.notice ?? "Pick the conversation to delete:", chatId),
+    components: [row]
+  };
+}
+
+async function openDeleteMenu(params: {
+  interaction: ChatInputCommandInteraction;
+  contextKey: string;
+  notice?: string;
+}): Promise<void> {
+  const payload = await buildDeleteMenuResponse({
+    contextKey: params.contextKey,
+    userId: params.interaction.user.id,
+    notice: params.notice
+  });
+
+  await params.interaction.reply({
+    content: payload.content,
+    components: payload.components,
+    ephemeral: true
+  });
+}
+
+async function refreshDeleteMenu(params: {
+  interaction: ComponentInteraction;
+  contextKey: string;
+  userId: string;
+  notice?: string;
+}): Promise<void> {
+  const payload = await buildDeleteMenuResponse({
+    contextKey: params.contextKey,
+    userId: params.userId,
+    notice: params.notice
+  });
+
+  await respondToComponentInteraction(params.interaction, payload);
+}
+
+async function deleteDiscordConversationAndRefreshContext(params: {
+  contextKey: string;
+  conversationId: string;
+}): Promise<void> {
+  const activeConversationId = await getActiveDiscordConversationId(params.contextKey);
+  await deleteConversation(params.conversationId);
+
+  if (activeConversationId !== params.conversationId) {
+    return;
+  }
+
+  const remainingConversations = await listDiscordConversations();
+  const fallbackConversation = remainingConversations[0];
+  if (fallbackConversation) {
+    await setCurrentDiscordConversation(params.contextKey, fallbackConversation.id);
+    return;
+  }
+
+  await preparePendingDiscordConversation(params.contextKey);
 }
 
 async function handleConversationCommand(params: {
@@ -474,6 +629,14 @@ async function handleConversationCommand(params: {
 
     await setCurrentDiscordConversation(params.contextKey, selected.id);
     return `Switched to ${conversationDisplayName(selected)} (${selected.id}).`;
+  }
+
+  if (params.command === "delete") {
+    if (params.isBusy) {
+      return "This conversation is busy right now.";
+    }
+
+    return "Use the slash-command `/delete` to choose and confirm which saved chat to remove.";
   }
 
   if (params.command === "config") {
@@ -681,6 +844,62 @@ export async function startDiscordChannel(): Promise<DiscordChannelRuntime | nul
   client.on(Events.InteractionCreate, (interaction) => {
     void withFreshDiscordConfig(async (discordConfig, botName) => {
       if (interaction.isButton()) {
+        if (interaction.customId.startsWith(`${deleteConfirmPrefix}:`)) {
+          const [, confirmationId, decision] = interaction.customId.split(":");
+          const pending = confirmationId ? pendingDeleteConfirmations.get(confirmationId) : undefined;
+          if (!pending) {
+            await interaction.reply({
+              content: "That delete confirmation has expired. Run `/delete` again.",
+              ephemeral: true
+            });
+            return;
+          }
+
+          if (interaction.user.id !== pending.userId) {
+            await interaction.reply({
+              content: "Only the person who opened this delete menu can use it.",
+              ephemeral: true
+            });
+            return;
+          }
+
+          pendingDeleteConfirmations.delete(confirmationId);
+
+          if (decision !== "confirm") {
+            await refreshDeleteMenu({
+              interaction,
+              contextKey: pending.contextKey,
+              userId: pending.userId,
+              notice: "Deletion canceled. Pick another conversation to delete:"
+            });
+            return;
+          }
+
+          const conversations = await listDiscordConversations();
+          const selected = conversations.find((conversation) => conversation.id === pending.conversationId);
+          if (!selected) {
+            await refreshDeleteMenu({
+              interaction,
+              contextKey: pending.contextKey,
+              userId: pending.userId,
+              notice: "That conversation is no longer available. Pick another conversation to delete:"
+            });
+            return;
+          }
+
+          await deleteDiscordConversationAndRefreshContext({
+            contextKey: pending.contextKey,
+            conversationId: selected.id
+          });
+          await refreshDeleteMenu({
+            interaction,
+            contextKey: pending.contextKey,
+            userId: pending.userId,
+            notice: `Deleted ${conversationDisplayName(selected)} (${selected.id}). Pick another conversation to delete:`
+          });
+          return;
+        }
+
         if (!interaction.customId.startsWith(`${approvalActionPrefix}:`)) {
           return;
         }
@@ -709,39 +928,101 @@ export async function startDiscordChannel(): Promise<DiscordChannelRuntime | nul
       }
 
       if (interaction.isStringSelectMenu()) {
-        if (!interaction.customId.startsWith(`${switchMenuPrefix}:`)) {
+        if (interaction.customId.startsWith(`${switchMenuPrefix}:`)) {
+          const pending = pendingSwitchMenus.get(interaction.customId);
+          if (!pending) {
+            await respondToComponentInteraction(interaction, {
+              content: "That switch menu has expired. Run `/switch` again."
+            });
+            return;
+          }
+
+          if (interaction.user.id !== pending.userId) {
+            await interaction.reply({
+              content: "Only the person who opened this switch menu can use it.",
+              ephemeral: true
+            });
+            return;
+          }
+
+          pendingSwitchMenus.delete(interaction.customId);
+
+          const selectedId = interaction.values[0];
+          const conversations = await listDiscordConversations();
+          const selected = conversations.find((conversation) => conversation.id === selectedId);
+          if (!selected) {
+            await respondToComponentInteraction(interaction, {
+              content: "That conversation is no longer available. Run `/switch` again."
+            });
+            return;
+          }
+
+          await setCurrentDiscordConversation(pending.contextKey, selected.id);
+          await respondToComponentInteraction(interaction, {
+            content: appendChatIdFooter(`Switched to ${conversationDisplayName(selected)} (${selected.id}).`, selected.id)
+          });
           return;
         }
 
-        const pending = pendingSwitchMenus.get(interaction.customId);
+        if (!interaction.customId.startsWith(`${deleteMenuPrefix}:`)) {
+          return;
+        }
+
+        const pending = pendingDeleteMenus.get(interaction.customId);
         if (!pending) {
-          await respondToSelectInteraction(interaction, "That switch menu has expired. Run `/switch` again.");
+          await respondToComponentInteraction(interaction, {
+            content: "That delete menu has expired. Run `/delete` again."
+          });
           return;
         }
 
         if (interaction.user.id !== pending.userId) {
           await interaction.reply({
-            content: "Only the person who opened this switch menu can use it.",
+            content: "Only the person who opened this delete menu can use it.",
             ephemeral: true
           });
           return;
         }
 
-        pendingSwitchMenus.delete(interaction.customId);
+        pendingDeleteMenus.delete(interaction.customId);
 
         const selectedId = interaction.values[0];
         const conversations = await listDiscordConversations();
         const selected = conversations.find((conversation) => conversation.id === selectedId);
         if (!selected) {
-          await respondToSelectInteraction(interaction, "That conversation is no longer available. Run `/switch` again.");
+          await refreshDeleteMenu({
+            interaction,
+            contextKey: pending.contextKey,
+            userId: pending.userId,
+            notice: "That conversation is no longer available. Pick another conversation to delete:"
+          });
           return;
         }
 
-        await setCurrentDiscordConversation(pending.contextKey, selected.id);
-        await respondToSelectInteraction(
-          interaction,
-          appendChatIdFooter(`Switched to ${conversationDisplayName(selected)} (${selected.id}).`, selected.id)
+        const confirmationId = crypto.randomUUID();
+        pendingDeleteConfirmations.set(confirmationId, {
+          contextKey: pending.contextKey,
+          conversationId: selected.id,
+          userId: pending.userId
+        });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`${deleteConfirmPrefix}:${confirmationId}:confirm`)
+            .setLabel("Yes, delete")
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`${deleteConfirmPrefix}:${confirmationId}:cancel`)
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Secondary)
         );
+        await respondToComponentInteraction(interaction, {
+          content: buildDeleteConfirmationContent({
+            conversation: selected,
+            chatId: await getActiveDiscordConversationId(pending.contextKey)
+          }),
+          components: [row]
+        });
         return;
       }
 
@@ -769,6 +1050,23 @@ export async function startDiscordChannel(): Promise<DiscordChannelRuntime | nul
       const command = interaction.commandName as SupportedCommand;
       if (command === "switch") {
         await openSwitchMenu({
+          interaction,
+          contextKey
+        });
+        return;
+      }
+
+      if (command === "delete") {
+        if (busyContexts.has(contextKey)) {
+          await respondToInteraction(
+            interaction,
+            appendChatIdFooter("This conversation is busy right now.", await getActiveDiscordConversationId(contextKey)),
+            { ephemeral: true }
+          );
+          return;
+        }
+
+        await openDeleteMenu({
           interaction,
           contextKey
         });
@@ -804,6 +1102,8 @@ export async function startDiscordChannel(): Promise<DiscordChannelRuntime | nul
     async close(): Promise<void> {
       busyContexts.clear();
       pendingSwitchMenus.clear();
+      pendingDeleteMenus.clear();
+      pendingDeleteConfirmations.clear();
       for (const pending of pendingApprovals.values()) {
         clearTimeout(pending.timeout);
         pending.resolve(false);
