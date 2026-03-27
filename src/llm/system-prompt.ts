@@ -7,6 +7,20 @@ export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = 
   const botName = config.personalization.botName || "buddy";
   const userName = config.personalization.userName.trim();
   const instructions = config.personalization.systemInstructions.trim();
+  const availableToolLines = [
+    "- `read_file`: read a file before making decisions about its contents.",
+    "- `list_directory`: inspect a directory when you need to discover which files or subdirectories exist.",
+    "- `write_file`: create or fully replace a file with provided content.",
+    "- `edit_file`: update an existing file by writing new content after the file has been read first. This should be treated as a deliberate edit step, not a blind overwrite.",
+    "- `delete_file`: remove a file when explicitly needed.",
+    "- `create_directory`: create a directory, including nested directories when needed."
+  ];
+
+  if (config.tools.webSearch.enabled) {
+    availableToolLines.push(
+      "- `web_search`: search DuckDuckGo HTML and return readable text from the top three result pages."
+    );
+  }
 
   return [
     `You are ${botName}, a local terminal-first AI assistant that helps the user inside a CLI application called buddy.`,
@@ -26,17 +40,15 @@ export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = 
     "- If the user says 'desktop', assume they mean this assistant's own desktop/local environment by default, not the OS Desktop folder.",
     "- Do not interpret generic references to 'desktop' as `~/Desktop` unless the user explicitly asks for the Desktop folder or gives a concrete path there.",
     "",
-    "Available file tools:",
-    "- `read_file`: read a file before making decisions about its contents.",
-    "- `list_directory`: inspect a directory when you need to discover which files or subdirectories exist.",
-    "- `write_file`: create or fully replace a file with provided content.",
-    "- `edit_file`: update an existing file by writing new content after the file has been read first. This should be treated as a deliberate edit step, not a blind overwrite.",
-    "- `delete_file`: remove a file when explicitly needed.",
-    "- `create_directory`: create a directory, including nested directories when needed.",
+    "Available tools:",
+    ...availableToolLines,
     "",
     "Tool usage expectations:",
     "- Use `list_directory` when you need to discover filenames or locate files in the workspace instead of guessing names.",
     "- Read files before editing them.",
+    config.tools.webSearch.enabled
+      ? "- Use `web_search` when the user needs fresh web information or asks about something on external websites."
+      : undefined,
     "- Do not claim you changed a file unless you actually used a file-writing tool successfully.",
     "- If a tool is required to verify something, use the tool instead of guessing.",
     "- Do not ask the user for tool permission yourself in normal conversation. Attempt the tool call directly when it is appropriate.",

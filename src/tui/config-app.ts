@@ -26,6 +26,10 @@ function restrictionsSummary(config: BuddyConfig): string {
   return `${config.restrictions.accessLevel} / ${blocked} blocked ${blocked === 1 ? "directory" : "directories"}`;
 }
 
+function toolsSummary(config: BuddyConfig): string {
+  return `Web search ${config.tools.webSearch.enabled ? "enabled" : "disabled"}`;
+}
+
 class SettingsPage implements Component {
   constructor(
     private readonly title: Text,
@@ -86,6 +90,7 @@ export async function runConfigTui(): Promise<void> {
     rootList.updateValue("personalization", personalizationSummary(nextConfig));
     rootList.updateValue("channels", channelsSummary(nextConfig));
     rootList.updateValue("restrictions", restrictionsSummary(nextConfig));
+    rootList.updateValue("tools", toolsSummary(nextConfig));
     statusLine.setText(theme.success("Saved to ~/.buddy/config.json"));
     tui.requestRender();
   };
@@ -525,6 +530,47 @@ export async function runConfigTui(): Promise<void> {
     });
   };
 
+  const buildToolsPage = (done: (value?: string) => void): Component => {
+    const list = new SettingsList(
+      [
+        {
+          id: "webSearchEnabled",
+          label: "Web Search",
+          description: "DuckDuckGo HTML search plus text extraction from the top 3 pages",
+          currentValue: config.tools.webSearch.enabled ? "on" : "off",
+          values: ["off", "on"]
+        }
+      ],
+      12,
+      settingsTheme,
+      (id, newValue) => {
+        if (id !== "webSearchEnabled") {
+          return;
+        }
+
+        void persist({
+          ...config,
+          tools: {
+            ...config.tools,
+            webSearch: {
+              ...config.tools.webSearch,
+              enabled: newValue === "on"
+            }
+          }
+        });
+        list.updateValue(id, newValue);
+      },
+      () => done(toolsSummary(config)),
+      { enableSearch: true }
+    );
+
+    return createPage({
+      title: "Tools",
+      subtitle: "Enable or disable built-in model tools. Esc returns to sections.",
+      list
+    });
+  };
+
   const rootList = new SettingsList(
     [
       {
@@ -554,6 +600,13 @@ export async function runConfigTui(): Promise<void> {
         description: "Blocked directories and access level for tool execution",
         currentValue: restrictionsSummary(config),
         submenu: (_value, done) => buildRestrictionsPage(done)
+      },
+      {
+        id: "tools",
+        label: "Tools",
+        description: "Enable or disable optional assistant tools",
+        currentValue: toolsSummary(config),
+        submenu: (_value, done) => buildToolsPage(done)
       }
     ] satisfies SettingItem[],
     14,

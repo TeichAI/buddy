@@ -26,6 +26,12 @@ function mergeConfig(input: Partial<BuddyConfig> | undefined): BuddyConfig {
       ...defaultConfig.restrictions,
       ...input?.restrictions,
       blockedDirectories: input?.restrictions?.blockedDirectories ?? defaultConfig.restrictions.blockedDirectories
+    },
+    tools: {
+      webSearch: {
+        ...defaultConfig.tools.webSearch,
+        ...input?.tools?.webSearch
+      }
     }
   };
 }
