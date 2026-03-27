@@ -104,8 +104,14 @@ const pendingApprovals = new Map<
 >();
 
 interface ToolTranscriptState {
-  order: string[];
-  latestById: Map<string, ToolRuntimeEvent>;
+  entries: ToolRuntimeEvent[];
+  activeEntryByInvocation: Map<string, number>;
+}
+
+interface StreamingDiscordReply {
+  start(): Promise<void>;
+  update(content: string): void;
+  finalize(content: string): Promise<void>;
 }
 
 type ComponentInteraction = StringSelectMenuInteraction | ButtonInteraction;
@@ -207,17 +213,28 @@ function splitDiscordMessage(content: string, maxLength = 1900): string[] {
 
 function createToolTranscriptState(): ToolTranscriptState {
   return {
-    order: [],
-    latestById: new Map()
+    entries: [],
+    activeEntryByInvocation: new Map()
   };
 }
 
 function trackToolEvent(state: ToolTranscriptState, event: ToolRuntimeEvent): void {
-  if (!state.latestById.has(event.id)) {
-    state.order.push(event.id);
-  }
+  const invocationKey = `${event.id}\u0000${event.toolName}\u0000${event.path}\u0000${event.summary}`;
+  const existingIndex = state.activeEntryByInvocation.get(invocationKey);
 
-  state.latestById.set(event.id, event);
+  if (existingIndex === undefined) {
+    state.entries.push(event);
+
+    if (event.status === "running" || event.status === "awaiting_approval") {
+      state.activeEntryByInvocation.set(invocationKey, state.entries.length - 1);
+    }
+  } else {
+    state.entries[existingIndex] = event;
+
+    if (event.status === "completed" || event.status === "denied" || event.status === "failed") {
+      state.activeEntryByInvocation.delete(invocationKey);
+    }
+  }
 }
 
 function summarizeToolFailure(event: ToolRuntimeEvent): string {
@@ -234,10 +251,16 @@ function summarizeToolFailure(event: ToolRuntimeEvent): string {
 }
 
 function buildToolTranscriptLines(state: ToolTranscriptState): string[] {
-  return state.order
-    .map((id) => state.latestById.get(id))
-    .filter((event): event is ToolRuntimeEvent => Boolean(event))
+  return state.entries
     .flatMap((event) => {
+      if (event.status === "running") {
+        return [`> Running: ${event.summary}`];
+      }
+
+      if (event.status === "awaiting_approval") {
+        return [`> Approval needed: ${event.summary}`];
+      }
+
       if (event.status === "completed") {
         return [`> ${event.summary}`];
       }
@@ -252,6 +275,12 @@ function buildToolTranscriptLines(state: ToolTranscriptState): string[] {
 
       return [];
     });
+}
+
+function buildInProgressResponse(params: { chatId: string; toolTranscript: ToolTranscriptState }): string {
+  const toolLines = buildToolTranscriptLines(params.toolTranscript);
+  const content = toolLines.length > 0 ? `${toolLines.join("\n\n")}\n\n_Working..._` : "_Working..._";
+  return appendChatIdFooter(content, params.chatId);
 }
 
 function buildTurnResponse(params: {
@@ -270,6 +299,64 @@ function appendChatIdFooter(content: string, chatId: string | null): string {
   }
 
   return `${content.trim()}\n\n-# Chat ID: ${chatId}`;
+}
+
+function createStreamingDiscordReply(sourceMessage: Message, initialContent: string): StreamingDiscordReply {
+  let replyPromise: Promise<Message> | null = null;
+  let lastRenderedContent: string | null = null;
+  let renderQueue = Promise.resolve();
+
+  const ensureReply = async (): Promise<Message> => {
+    if (!replyPromise) {
+      const [firstChunk] = splitDiscordMessage(initialContent);
+      lastRenderedContent = firstChunk;
+      replyPromise = sourceMessage.reply({
+        content: firstChunk,
+        allowedMentions: {
+          repliedUser: true
+        }
+      });
+    }
+
+    return await replyPromise;
+  };
+
+  const renderPrimaryContent = async (content: string): Promise<void> => {
+    const [firstChunk] = splitDiscordMessage(content);
+    renderQueue = renderQueue.then(async () => {
+      if (firstChunk === lastRenderedContent) {
+        return;
+      }
+
+      const reply = await ensureReply();
+      await reply.edit({ content: firstChunk });
+      lastRenderedContent = firstChunk;
+    });
+
+    await renderQueue;
+  };
+
+  return {
+    async start(): Promise<void> {
+      await ensureReply();
+    },
+    update(content: string): void {
+      void renderPrimaryContent(content);
+    },
+    async finalize(content: string): Promise<void> {
+      const chunks = splitDiscordMessage(content);
+      await renderPrimaryContent(content);
+
+      for (let index = 1; index < chunks.length; index += 1) {
+        await sourceMessage.reply({
+          content: chunks[index],
+          allowedMentions: {
+            repliedUser: false
+          }
+        });
+      }
+    }
+  };
 }
 
 async function respondToMessage(message: Message, content: string): Promise<void> {
@@ -673,6 +760,7 @@ async function runConversationTurn(params: {
   contextKey: string;
   userInput: string;
   sourceMessage: Message;
+  streamingReply: StreamingDiscordReply;
 }): Promise<{ content: string; chatId: string }> {
   const conversation = await createOrLoadDiscordConversationForTurn(params.contextKey);
   const pendingMessages = [...conversation.messages, { role: "user" as const, content: params.userInput }];
@@ -684,6 +772,12 @@ async function runConversationTurn(params: {
   await setCurrentDiscordConversation(params.contextKey, savedPendingConversation.id);
 
   const toolTranscript = createToolTranscriptState();
+  params.streamingReply.update(
+    buildInProgressResponse({
+      chatId: savedPendingConversation.id,
+      toolTranscript
+    })
+  );
 
   const result = await executeChatTurn({
     messages: conversation.messages,
@@ -691,6 +785,12 @@ async function runConversationTurn(params: {
     channel: "discord",
     onToolEvent: (event) => {
       trackToolEvent(toolTranscript, event);
+      params.streamingReply.update(
+        buildInProgressResponse({
+          chatId: savedPendingConversation.id,
+          toolTranscript
+        })
+      );
     },
     requestApproval: async (request) =>
       await sendApprovalEmbed({
@@ -821,20 +921,27 @@ export async function startDiscordChannel(): Promise<DiscordChannelRuntime | nul
 
       busyContexts.add(contextKey);
 
+      let streamingReply: StreamingDiscordReply | null = null;
+
       try {
         await message.channel.sendTyping();
+        streamingReply = createStreamingDiscordReply(message, "_Working..._");
+        await streamingReply.start();
         const response = await runConversationTurn({
           contextKey,
           userInput: rawInput,
-          sourceMessage: message
+          sourceMessage: message,
+          streamingReply
         });
-        await respondToMessage(message, response.content);
+        await streamingReply.finalize(response.content);
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
-        await respondToMessage(
-          message,
-          appendChatIdFooter(`Error: ${text}`, await getActiveDiscordConversationId(contextKey))
-        );
+        const errorContent = appendChatIdFooter(`Error: ${text}`, await getActiveDiscordConversationId(contextKey));
+        if (streamingReply) {
+          await streamingReply.finalize(errorContent);
+        } else {
+          await respondToMessage(message, errorContent);
+        }
       } finally {
         busyContexts.delete(contextKey);
       }
