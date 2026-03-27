@@ -7,7 +7,7 @@ export async function sendChatMessage(
   messages: ChatCompletionMessageParam[]
 ): Promise<string> {
   if (!config.providers.baseUrl || !config.providers.apiKey || !config.providers.model) {
-    throw new Error("Provider is not fully configured. Run `buddy --config` and complete Providers.");
+    throw new Error("Provider is not fully configured. Run `buddy config` and complete Providers.");
   }
 
   const client = new OpenAI({

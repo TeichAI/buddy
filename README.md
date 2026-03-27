@@ -1,6 +1,12 @@
 # Buddy
 
-Buddy is a more easy to use, and more secure version of OpenClaw. It srives to be more customizable while still allowing non-techical users use it without struggle.
+Buddy is a terminal-first AI assistant with a guided onboarding flow, a chat TUI, and support for either a local or remote server.
+
+## Install
+
+```bash
+npm install -g @teichai/buddy
+```
 
 ## Getting started
 
@@ -9,4 +15,5 @@ Run `buddy onboard` for a guided first-time setup. It starts by asking whether t
 After onboarding:
 
 - Run `buddy` to open the chat UI.
-- Run `buddy --config` to tweak advanced settings like Discord and blocked directories.
+- Run `buddy config` to tweak advanced settings like Discord and blocked directories.
+- Run `buddy server start` to launch the local server in the background when you want a dedicated daemon.

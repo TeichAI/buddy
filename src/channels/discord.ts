@@ -727,7 +727,7 @@ async function handleConversationCommand(params: {
   }
 
   if (params.command === "config") {
-    return "Configuration lives in the local TUI. Run `buddy --config` on the machine hosting the server.";
+    return "Configuration lives in the local TUI. Run `buddy config` on the machine hosting the server.";
   }
 
   if (params.command === "help") {

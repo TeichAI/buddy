@@ -1,27 +1,58 @@
 {
-  "name": "buddy",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@teichai/buddy",
+  "version": "0.0.1",
+  "description": "Terminal-first AI assistant with onboarding, chat UI, and local or remote server support.",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "buddy": "./dist/index.js"
+    "buddy": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TeichAI/buddy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TeichAI/buddy/issues"
+  },
+  "homepage": "https://github.com/TeichAI/buddy#readme",
+  "keywords": [
+    "ai",
+    "assistant",
+    "cli",
+    "terminal",
+    "tui",
+    "openai"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "build": "npm run build:cli",
-    "build:cli": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && npm run build:cli",
+    "build:cli": "tsc -p tsconfig.build.json",
     "build:tui": "npm run build:cli",
     "build:server": "npm run build:cli",
     "dev": "npm run dev:cli",
     "dev:cli": "tsx src/index.ts",
     "dev:tui": "tsx src/index.ts",
-    "dev:config": "tsx src/index.ts --config",
+    "dev:config": "tsx src/index.ts config",
     "dev:server": "tsx src/index.ts server run",
     "start": "npm run start:cli",
     "start:cli": "node dist/index.js",
     "start:tui": "node dist/index.js",
     "start:server": "node dist/index.js server run",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/*.test.ts src/**/*.test.ts"
+    "test": "node --import tsx --test src/*.test.ts src/**/*.test.ts",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check && npm test"
   },
   "dependencies": {
     "@mariozechner/pi-tui": "^0.62.0",
@@ -29,6 +60,14 @@
     "discord.js": "^14.25.1",
     "openai": "^4.104.0",
     "ws": "^8.20.0"
+  },
+  "overrides": {
+    "discord.js": {
+      "undici": "6.24.1"
+    },
+    "@discordjs/rest": {
+      "undici": "6.24.1"
+    }
   },
   "devDependencies": {
     "@types/node": "^24.5.2",

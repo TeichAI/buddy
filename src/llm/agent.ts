@@ -167,7 +167,7 @@ export async function runAgentTurn(params: {
   const { config, toolRuntime, userInput } = params;
 
   if (!config.providers.baseUrl || !config.providers.apiKey || !config.providers.model) {
-    throw new Error("Provider is not fully configured. Run `buddy --config` and complete Providers.");
+    throw new Error("Provider is not fully configured. Run `buddy config` and complete Providers.");
   }
 
   const client = new OpenAI({
