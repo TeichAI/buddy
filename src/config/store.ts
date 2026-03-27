@@ -64,6 +64,22 @@ export async function ensureServerSecretToken(): Promise<string> {
   return token;
 }
 
+export async function loadExistingServerSecretToken(): Promise<string | null> {
+  await ensureBuddyHome();
+
+  try {
+    const token = (await fs.readFile(serverSecretTokenPath, "utf8")).trim();
+    return token || null;
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return null;
+}
+
 export async function loadServerSecretToken(): Promise<string> {
   return ensureServerSecretToken();
 }
