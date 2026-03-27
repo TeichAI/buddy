@@ -46,7 +46,7 @@ export const defaultConfig: BuddyConfig = {
       enabled: false,
       botToken: "",
       applicationId: "",
-      guildId: ""
+      allowedUsernames: []
     }
   },
   restrictions: {

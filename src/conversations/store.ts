@@ -12,6 +12,10 @@ export interface PersistedConversation {
   messages: ChatCompletionMessageParam[];
 }
 
+export interface ConversationListOptions {
+  includeEmpty?: boolean;
+}
+
 function conversationFilePath(id: string): string {
   return `${conversationsPath}/${id}.json`;
 }
@@ -119,7 +123,7 @@ export async function deleteConversation(id: string): Promise<void> {
   await fs.rm(conversationFilePath(id), { force: true });
 }
 
-export async function listConversations(): Promise<PersistedConversation[]> {
+export async function listConversations(options: ConversationListOptions = {}): Promise<PersistedConversation[]> {
   await ensureConversationsDir();
 
   const entries = await fs.readdir(conversationsPath, { withFileTypes: true });
@@ -132,10 +136,12 @@ export async function listConversations(): Promise<PersistedConversation[]> {
       })
   );
 
-  return conversations.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return conversations
+    .filter((conversation) => options.includeEmpty !== false || conversation.messages.length > 0)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export async function loadLatestConversation(): Promise<PersistedConversation | null> {
-  const conversations = await listConversations();
+export async function loadLatestConversation(options: ConversationListOptions = {}): Promise<PersistedConversation | null> {
+  const conversations = await listConversations(options);
   return conversations[0] ?? null;
 }

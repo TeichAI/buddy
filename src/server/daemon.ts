@@ -1,10 +1,9 @@
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { createToolContext } from "../tools/file-tools.js";
-import { createToolRuntime } from "../tools/runtime.js";
-import { ensureBuddyHome, loadConfig, loadSecretToken } from "../config/store.js";
-import { runAgentTurn } from "../llm/agent.js";
-import { buildSystemPrompt } from "../llm/system-prompt.js";
+import { ensureBuddyHome, loadSecretToken } from "../config/store.js";
 import { websocketHost, websocketPort } from "../utils/paths.js";
+import { startDiscordChannel } from "../channels/discord.js";
+import { executeChatTurn } from "./chat.js";
 import type {
   ApprovalResponseMessage,
   ChatTurnRequestMessage,
@@ -18,17 +17,6 @@ interface PendingApproval {
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function withCurrentSystemPrompt(messages: ChatTurnRequestMessage["messages"], systemPrompt: string) {
-  const nextMessages = messages.filter((message) => message.role !== "system");
-  return [
-    {
-      role: "system" as const,
-      content: systemPrompt
-    },
-    ...nextMessages
-  ];
 }
 
 class SocketSession {
@@ -103,38 +91,29 @@ class SocketSession {
 
   private async handleChatTurn(message: ChatTurnRequestMessage): Promise<void> {
     try {
-      const config = await loadConfig();
-      const toolRuntime = createToolRuntime(
-        config,
-        {
-          requestApproval: async (request) =>
-            await new Promise<boolean>((resolve) => {
-              const approvalId = `${message.requestId}:${request.id}`;
-              this.approvals.set(approvalId, { resolve });
-
-              this.send({
-                type: "approval_request",
-                requestId: message.requestId,
-                approvalId,
-                request
-              });
-            }),
-          onEvent: (event) => {
-            this.send({
-              type: "tool_event",
-              requestId: message.requestId,
-              event
-            });
-          }
-        },
-        this.toolContext
-      );
-
-      const result = await runAgentTurn({
-        config,
-        messages: withCurrentSystemPrompt(message.messages, buildSystemPrompt(config)),
+      const result = await executeChatTurn({
+        messages: message.messages,
         userInput: message.userInput,
-        toolRuntime
+        toolContext: this.toolContext,
+        requestApproval: async (request) =>
+          await new Promise<boolean>((resolve) => {
+            const approvalId = `${message.requestId}:${request.id}`;
+            this.approvals.set(approvalId, { resolve });
+
+            this.send({
+              type: "approval_request",
+              requestId: message.requestId,
+              approvalId,
+              request
+            });
+          }),
+        onToolEvent: (event) => {
+          this.send({
+            type: "tool_event",
+            requestId: message.requestId,
+            event
+          });
+        }
       });
 
       this.send({
@@ -174,45 +153,50 @@ class SocketSession {
 export async function runSocketServer(): Promise<void> {
   await ensureBuddyHome();
   const authToken = await loadSecretToken();
+  const discordRuntime = await startDiscordChannel();
 
-  await new Promise<void>((resolve, reject) => {
-    const sockets = new Set<WebSocket>();
-    let shuttingDown = false;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const sockets = new Set<WebSocket>();
+      let shuttingDown = false;
 
-    const server = new WebSocketServer({
-      host: websocketHost,
-      port: websocketPort
-    });
-
-    server.on("connection", (socket: WebSocket) => {
-      sockets.add(socket);
-      socket.on("close", () => {
-        sockets.delete(socket);
+      const server = new WebSocketServer({
+        host: websocketHost,
+        port: websocketPort
       });
 
-      new SocketSession(socket, authToken, () => {
-        if (shuttingDown) {
+      server.on("connection", (socket: WebSocket) => {
+        sockets.add(socket);
+        socket.on("close", () => {
+          sockets.delete(socket);
+        });
+
+        new SocketSession(socket, authToken, () => {
+          if (shuttingDown) {
+            return;
+          }
+
+          shuttingDown = true;
+
+          for (const connection of sockets) {
+            connection.close();
+          }
+
+          server.close(() => resolve());
+        });
+      });
+
+      server.on("error", (error: Error) => {
+        const nodeError = error as NodeJS.ErrnoException;
+        if (nodeError.code === "EADDRINUSE") {
+          reject(new Error("The buddy server is already running."));
           return;
         }
 
-        shuttingDown = true;
-
-        for (const connection of sockets) {
-          connection.close();
-        }
-
-        server.close(() => resolve());
+        reject(error);
       });
     });
-
-    server.on("error", (error: Error) => {
-      const nodeError = error as NodeJS.ErrnoException;
-      if (nodeError.code === "EADDRINUSE") {
-        reject(new Error("The buddy server is already running."));
-        return;
-      }
-
-      reject(error);
-    });
-  });
+  } finally {
+    await discordRuntime?.close();
+  }
 }

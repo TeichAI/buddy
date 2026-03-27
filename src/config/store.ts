@@ -17,7 +17,9 @@ function mergeConfig(input: Partial<BuddyConfig> | undefined): BuddyConfig {
     channels: {
       discord: {
         ...defaultConfig.channels.discord,
-        ...input?.channels?.discord
+        ...input?.channels?.discord,
+        allowedUsernames:
+          input?.channels?.discord?.allowedUsernames ?? defaultConfig.channels.discord.allowedUsernames
       }
     },
     restrictions: {
