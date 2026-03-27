@@ -65,7 +65,7 @@ export class ApprovalDialog implements Component {
         onSelect: params.onSelect,
         onCancel: params.onCancel
       }),
-      "Supervised mode requires approval for mutating tool calls."
+      "Supervised mode requires approval for outside-workspace tool calls."
     );
   }
 
