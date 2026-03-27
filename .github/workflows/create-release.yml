@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Determine release metadata
         id: release
@@ -34,7 +35,6 @@ jobs:
 
           branch="${GITHUB_REF_NAME}"
           before="${{ github.event.before }}"
-          head="${GITHUB_SHA}"
           current_version="$(node -p "require('./package.json').version")"
 
           previous_version=""
@@ -47,10 +47,9 @@ jobs:
             fi
           fi
 
-          if [[ "$current_version" == "$previous_version" ]]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Package version is unchanged; skipping release."
-            exit 0
+          version_changed=false
+          if [[ "$current_version" != "$previous_version" ]]; then
+            version_changed=true
           fi
 
           if [[ "$branch" == "development" ]]; then
@@ -69,25 +68,33 @@ jobs:
                 | head -n 1 || true
             )"
           else
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "release_action=skip" >> "$GITHUB_OUTPUT"
             echo "Branch ${branch} is not configured for releases."
             exit 0
           fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Release ${tag} already exists; skipping."
-            exit 0
+            release_action="update"
+          else
+            release_action="create"
           fi
 
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          if [[ "$release_action" == "create" && "$version_changed" == "true" ]]; then
+            echo "Package version changed; creating ${tag}."
+          elif [[ "$release_action" == "create" ]]; then
+            echo "No release exists for ${tag}; creating it."
+          else
+            echo "Release ${tag} exists; updating its notes."
+          fi
+
+          echo "release_action=${release_action}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
           echo "version=${current_version}" >> "$GITHUB_OUTPUT"
-          echo "Release ${tag} will be created."
+          echo "version_changed=${version_changed}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.release_action != 'skip'
         shell: bash
         run: |
           set -euo pipefail
@@ -117,8 +124,57 @@ jobs:
           echo "Prepared release notes for ${tag}:"
           cat release-notes.md
 
+      - name: Install dependencies
+        if: steps.release.outputs.release_action != 'skip'
+        run: npm ci
+
+      - name: Build release assets
+        if: steps.release.outputs.release_action != 'skip'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          asset_base="buddy-${tag}"
+
+          rm -rf release-assets
+          mkdir -p release-assets
+
+          pack_json="$(npm pack --json --pack-destination release-assets)"
+          pack_file="$(
+            node -e 'const data = JSON.parse(process.argv[1]); process.stdout.write(data[0].filename);' \
+              "$pack_json"
+          )"
+
+          mv "release-assets/${pack_file}" "release-assets/${asset_base}.tgz"
+
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          tar -xzf "release-assets/${asset_base}.tgz" -C "$temp_dir"
+          (
+            cd "$temp_dir/package"
+            zip -rq "$GITHUB_WORKSPACE/release-assets/${asset_base}.zip" .
+          )
+
+          ls -lh release-assets
+
+      - name: Update release tag
+        if: steps.release.outputs.release_action != 'skip'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -f "$tag" "${GITHUB_SHA}"
+          git push --force origin "refs/tags/${tag}"
+
       - name: Create GitHub release
-        if: steps.release.outputs.should_release == 'true'
+        if: steps.release.outputs.release_action == 'create'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -127,6 +183,35 @@ jobs:
 
           tag="${{ steps.release.outputs.tag }}"
           gh release create "$tag" \
-            --target "${GITHUB_SHA}" \
+            --title "$tag" \
+            --verify-tag \
+            --notes-file release-notes.md
+
+      - name: Update GitHub release notes
+        if: steps.release.outputs.release_action == 'update'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          gh release edit "$tag" \
             --title "$tag" \
             --notes-file release-notes.md
+
+      - name: Upload release assets
+        if: steps.release.outputs.release_action != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          asset_base="buddy-${tag}"
+
+          gh release upload "$tag" \
+            "release-assets/${asset_base}.tgz" \
+            "release-assets/${asset_base}.zip" \
+            --clobber
