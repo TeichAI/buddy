@@ -1,7 +1,6 @@
 import type { Component } from "@mariozechner/pi-tui";
 import { CombinedAutocompleteProvider, ProcessTerminal, TUI, Text } from "@mariozechner/pi-tui";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import { loadConfig } from "../config/store.js";
 import type { BuddyConfig } from "../config/schema.js";
 import { BuddySocketClient } from "../server/client.js";
 import { getCliCurrentConversationId, setCliCurrentConversationId } from "../current/store.js";
@@ -129,7 +128,8 @@ const slashCommands = [
 ] as const;
 
 export async function runChatTui(): Promise<void> {
-  let config = await loadConfig();
+  const socketClient = new BuddySocketClient();
+  let config = await socketClient.getConfig();
   const currentConversationId = await getCliCurrentConversationId();
   let conversation: PersistedConversation;
 
@@ -157,7 +157,6 @@ export async function runChatTui(): Promise<void> {
 
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal, true);
-  const socketClient = new BuddySocketClient();
   const title = new Text("", 0, 0);
   const subtitle = new Text("", 0, 0);
   const topDivider = new Divider();

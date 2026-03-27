@@ -1,13 +1,14 @@
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { createToolContext } from "../tools/file-tools.js";
-import { ensureBuddyHome, loadSecretToken } from "../config/store.js";
-import { websocketHost, websocketPort } from "../utils/paths.js";
+import { ensureBuddyHome, loadConfig, loadServerSecretToken, saveConfig } from "../config/store.js";
+import { localWebsocketHost, localWebsocketPort } from "../utils/paths.js";
 import { startDiscordChannel } from "../channels/discord.js";
 import { executeChatTurn } from "./chat.js";
 import type {
   ApprovalResponseMessage,
   ChatTurnRequestMessage,
   ClientMessage,
+  ConfigRequestMessage,
   ServerMessage
 } from "./protocol.js";
 
@@ -80,12 +81,55 @@ class SocketSession {
       return;
     }
 
+    if (message.type === "get_config") {
+      await this.handleConfigRequest(message);
+      return;
+    }
+
+    if (message.type === "update_config") {
+      await this.handleConfigUpdate(message.requestId, message.config);
+      return;
+    }
+
     if (message.type === "shutdown") {
       this.send({
         type: "shutdown_result",
         requestId: message.requestId
       });
       this.requestShutdown();
+    }
+  }
+
+  private async handleConfigRequest(message: ConfigRequestMessage): Promise<void> {
+    try {
+      this.send({
+        type: "config_result",
+        requestId: message.requestId,
+        config: await loadConfig()
+      });
+    } catch (error) {
+      this.send({
+        type: "error",
+        requestId: message.requestId,
+        message: stringifyError(error)
+      });
+    }
+  }
+
+  private async handleConfigUpdate(requestId: string, config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
+    try {
+      await saveConfig(config);
+      this.send({
+        type: "update_config_result",
+        requestId,
+        config: await loadConfig()
+      });
+    } catch (error) {
+      this.send({
+        type: "error",
+        requestId,
+        message: stringifyError(error)
+      });
     }
   }
 
@@ -152,7 +196,7 @@ class SocketSession {
 
 export async function runSocketServer(): Promise<void> {
   await ensureBuddyHome();
-  const authToken = await loadSecretToken();
+  const authToken = await loadServerSecretToken();
   const discordRuntime = await startDiscordChannel();
 
   try {
@@ -161,8 +205,8 @@ export async function runSocketServer(): Promise<void> {
       let shuttingDown = false;
 
       const server = new WebSocketServer({
-        host: websocketHost,
-        port: websocketPort
+        host: localWebsocketHost,
+        port: localWebsocketPort
       });
 
       server.on("connection", (socket: WebSocket) => {

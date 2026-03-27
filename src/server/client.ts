@@ -1,14 +1,16 @@
 import crypto from "node:crypto";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import WebSocket, { type RawData } from "ws";
-import { loadSecretToken } from "../config/store.js";
+import { loadCliSocketConnection } from "../cli-config/store.js";
+import type { BuddyConfig } from "../config/schema.js";
 import type {
   ApprovalRequestMessage,
   ClientMessage,
+  ConfigResultMessage,
   ServerMessage,
-  StatusResultMessage
+  StatusResultMessage,
+  UpdateConfigResultMessage
 } from "./protocol.js";
-import { websocketUrl } from "../utils/paths.js";
 import type { ToolApprovalRequest, ToolRuntimeEvent } from "../tools/runtime.js";
 
 interface PendingTurn {
@@ -23,6 +25,11 @@ interface PendingRequest<T> {
   reject: (error: Error) => void;
 }
 
+interface SocketConnection {
+  serverUrl: string;
+  authKey: string;
+}
+
 function createRequestId(): string {
   return crypto.randomUUID();
 }
@@ -32,10 +39,14 @@ function parseMessage(raw: string): ServerMessage {
 }
 
 export class BuddySocketClient {
+  constructor(private readonly loadConnection: () => Promise<SocketConnection> = loadCliSocketConnection) {}
+
   private socket: WebSocket | null = null;
   private authenticated = false;
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly pendingStatus = new Map<string, PendingRequest<StatusResultMessage>>();
+  private readonly pendingConfigLoads = new Map<string, PendingRequest<ConfigResultMessage>>();
+  private readonly pendingConfigUpdates = new Map<string, PendingRequest<UpdateConfigResultMessage>>();
   private readonly pendingShutdown = new Map<string, PendingRequest<void>>();
 
   async connect(): Promise<void> {
@@ -43,10 +54,10 @@ export class BuddySocketClient {
       return;
     }
 
-    const token = await loadSecretToken();
+    const connection = await this.loadConnection();
 
     await new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(websocketUrl);
+      const socket = new WebSocket(connection.serverUrl);
       let settled = false;
 
       const cleanup = () => {
@@ -61,11 +72,19 @@ export class BuddySocketClient {
         for (const pending of this.pendingStatus.values()) {
           pending.reject(error);
         }
+        for (const pending of this.pendingConfigLoads.values()) {
+          pending.reject(error);
+        }
+        for (const pending of this.pendingConfigUpdates.values()) {
+          pending.reject(error);
+        }
         for (const pending of this.pendingShutdown.values()) {
           pending.reject(error);
         }
         this.pendingTurns.clear();
         this.pendingStatus.clear();
+        this.pendingConfigLoads.clear();
+        this.pendingConfigUpdates.clear();
         this.pendingShutdown.clear();
       };
 
@@ -75,7 +94,19 @@ export class BuddySocketClient {
 
         socket.on("message", (chunk: RawData) => {
           const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-          this.handleMessage(parseMessage(raw));
+          const message = parseMessage(raw);
+
+          if (!this.authenticated && message.type === "error" && !message.requestId) {
+            if (!settled) {
+              settled = true;
+              cleanup();
+              reject(new Error(message.message));
+            }
+            socket.close();
+            return;
+          }
+
+          this.handleMessage(message);
         });
         socket.on("close", () => {
           this.socket = null;
@@ -93,7 +124,7 @@ export class BuddySocketClient {
           failPending(error instanceof Error ? error : new Error(String(error)));
         });
 
-        this.sendRaw({ type: "auth", token });
+        this.sendRaw({ type: "auth", token: connection.authKey });
       };
 
       const onInitialError = (error: Error) => {
@@ -200,6 +231,41 @@ export class BuddySocketClient {
     });
   }
 
+  async getConfig(): Promise<BuddyConfig> {
+    await this.connect();
+
+    const requestId = createRequestId();
+    return await new Promise((resolve, reject) => {
+      this.pendingConfigLoads.set(requestId, {
+        resolve: (message) => resolve(message.config),
+        reject
+      });
+
+      this.sendRaw({
+        type: "get_config",
+        requestId
+      });
+    });
+  }
+
+  async updateConfig(config: BuddyConfig): Promise<BuddyConfig> {
+    await this.connect();
+
+    const requestId = createRequestId();
+    return await new Promise((resolve, reject) => {
+      this.pendingConfigUpdates.set(requestId, {
+        resolve: (message) => resolve(message.config),
+        reject
+      });
+
+      this.sendRaw({
+        type: "update_config",
+        requestId,
+        config
+      });
+    });
+  }
+
   async shutdownServer(): Promise<void> {
     await this.connect();
 
@@ -234,6 +300,20 @@ export class BuddySocketClient {
         if (pendingStatus) {
           this.pendingStatus.delete(message.requestId);
           pendingStatus.reject(error);
+          return;
+        }
+
+        const pendingConfigLoad = this.pendingConfigLoads.get(message.requestId);
+        if (pendingConfigLoad) {
+          this.pendingConfigLoads.delete(message.requestId);
+          pendingConfigLoad.reject(error);
+          return;
+        }
+
+        const pendingConfigUpdate = this.pendingConfigUpdates.get(message.requestId);
+        if (pendingConfigUpdate) {
+          this.pendingConfigUpdates.delete(message.requestId);
+          pendingConfigUpdate.reject(error);
           return;
         }
 
@@ -280,6 +360,28 @@ export class BuddySocketClient {
       }
 
       this.pendingStatus.delete(message.requestId);
+      pending.resolve(message);
+      return;
+    }
+
+    if (message.type === "config_result") {
+      const pending = this.pendingConfigLoads.get(message.requestId);
+      if (!pending) {
+        return;
+      }
+
+      this.pendingConfigLoads.delete(message.requestId);
+      pending.resolve(message);
+      return;
+    }
+
+    if (message.type === "update_config_result") {
+      const pending = this.pendingConfigUpdates.get(message.requestId);
+      if (!pending) {
+        return;
+      }
+
+      this.pendingConfigUpdates.delete(message.requestId);
       pending.resolve(message);
       return;
     }

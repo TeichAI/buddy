@@ -1,3 +1,4 @@
+import { isDefaultLocalServerUrl, loadCliConfig } from "./cli-config/store.js";
 import { startServerInBackground, getServerStatus, stopServer } from "./server/control.js";
 import { runSocketServer } from "./server/daemon.js";
 import { runChatTui } from "./tui/app.js";
@@ -38,14 +39,9 @@ async function runServerCommand(subcommand: string | undefined): Promise<void> {
   printServerUsage();
 }
 
-export async function runCli(args = process.argv.slice(2)): Promise<void> {
-  if (args[0] === "server") {
-    await runServerCommand(args[1]);
-    return;
-  }
-
-  if (args.includes("--config")) {
-    await runConfigTui();
+async function maybeStartConfiguredLocalServer(): Promise<void> {
+  const { serverUrl } = await loadCliConfig();
+  if (!isDefaultLocalServerUrl(serverUrl)) {
     return;
   }
 
@@ -54,6 +50,20 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   } catch {
     // Development runs and manual server lifecycles should not block the TUI from trying the socket directly.
   }
+}
 
+export async function runCli(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "server") {
+    await runServerCommand(args[1]);
+    return;
+  }
+
+  if (args.includes("--config")) {
+    await maybeStartConfiguredLocalServer();
+    await runConfigTui();
+    return;
+  }
+
+  await maybeStartConfiguredLocalServer();
   await runChatTui();
 }

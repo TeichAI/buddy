@@ -1,4 +1,5 @@
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { BuddyConfig } from "../config/schema.js";
 import type { ToolApprovalRequest, ToolRuntimeEvent } from "../tools/runtime.js";
 
 export interface ClientAuthMessage {
@@ -25,6 +26,17 @@ export interface StatusRequestMessage {
   requestId: string;
 }
 
+export interface ConfigRequestMessage {
+  type: "get_config";
+  requestId: string;
+}
+
+export interface UpdateConfigRequestMessage {
+  type: "update_config";
+  requestId: string;
+  config: BuddyConfig;
+}
+
 export interface ShutdownRequestMessage {
   type: "shutdown";
   requestId: string;
@@ -35,6 +47,8 @@ export type ClientMessage =
   | ChatTurnRequestMessage
   | ApprovalResponseMessage
   | StatusRequestMessage
+  | ConfigRequestMessage
+  | UpdateConfigRequestMessage
   | ShutdownRequestMessage;
 
 export interface ServerAuthOkMessage {
@@ -73,6 +87,18 @@ export interface StatusResultMessage {
   pid: number;
 }
 
+export interface ConfigResultMessage {
+  type: "config_result";
+  requestId: string;
+  config: BuddyConfig;
+}
+
+export interface UpdateConfigResultMessage {
+  type: "update_config_result";
+  requestId: string;
+  config: BuddyConfig;
+}
+
 export interface ShutdownResultMessage {
   type: "shutdown_result";
   requestId: string;
@@ -85,4 +111,6 @@ export type ServerMessage =
   | ApprovalRequestMessage
   | ChatTurnResultMessage
   | StatusResultMessage
+  | ConfigResultMessage
+  | UpdateConfigResultMessage
   | ShutdownResultMessage;
