@@ -1,0 +1,132 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - development
+      - production
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Determine release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branch="${GITHUB_REF_NAME}"
+          before="${{ github.event.before }}"
+          head="${GITHUB_SHA}"
+          current_version="$(node -p "require('./package.json').version")"
+
+          previous_version=""
+          if [[ "$before" != "0000000000000000000000000000000000000000" ]]; then
+            if git cat-file -e "${before}:package.json" 2>/dev/null; then
+              previous_version="$(
+                git show "${before}:package.json" \
+                  | node -p "JSON.parse(require('node:fs').readFileSync(0, 'utf8')).version"
+              )"
+            fi
+          fi
+
+          if [[ "$current_version" == "$previous_version" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Package version is unchanged; skipping release."
+            exit 0
+          fi
+
+          if [[ "$branch" == "development" ]]; then
+            tag="v${current_version}-dev"
+            previous_tag="$(
+              git tag --list 'v*-dev' --sort=-creatordate \
+                | grep -Fxv "$tag" \
+                | head -n 1 || true
+            )"
+          elif [[ "$branch" == "production" ]]; then
+            tag="v${current_version}"
+            previous_tag="$(
+              git tag --list 'v*' --sort=-creatordate \
+                | grep -Ev -- '-dev$' \
+                | grep -Fxv "$tag" \
+                | head -n 1 || true
+            )"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Branch ${branch} is not configured for releases."
+            exit 0
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${tag} already exists; skipping."
+            exit 0
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${current_version}" >> "$GITHUB_OUTPUT"
+          echo "Release ${tag} will be created."
+
+      - name: Generate release notes
+        if: steps.release.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          previous_tag="${{ steps.release.outputs.previous_tag }}"
+
+          {
+            echo "## Changes"
+            echo
+
+            if [[ -n "$previous_tag" ]]; then
+              echo "Commits since ${previous_tag}:"
+              echo
+              git log "${previous_tag}..${GITHUB_SHA}" --pretty=format:'- %s (%h)'
+            else
+              echo "Commits included in this release:"
+              echo
+              git log "${GITHUB_SHA}" --pretty=format:'- %s (%h)'
+            fi
+          } > release-notes.md
+
+          if [[ ! -s release-notes.md ]]; then
+            printf '## Changes\n\n- No commits found.\n' > release-notes.md
+          fi
+
+          echo "Prepared release notes for ${tag}:"
+          cat release-notes.md
+
+      - name: Create GitHub release
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          gh release create "$tag" \
+            --target "${GITHUB_SHA}" \
+            --title "$tag" \
+            --notes-file release-notes.md
