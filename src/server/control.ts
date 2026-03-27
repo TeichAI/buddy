@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { loadServerSecretToken } from "../config/store.js";
@@ -8,8 +9,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function canSpawnBackgroundServer(): boolean {
-  return path.extname(process.argv[1] || "") === ".js";
+export function canSpawnBackgroundServer(entrypoint = process.argv[1]): boolean {
+  if (!entrypoint) {
+    return false;
+  }
+
+  let resolvedEntrypoint = entrypoint;
+  try {
+    resolvedEntrypoint = fs.realpathSync.native?.(entrypoint) ?? fs.realpathSync(entrypoint);
+  } catch {
+    resolvedEntrypoint = entrypoint;
+  }
+
+  return path.extname(resolvedEntrypoint) === ".js";
 }
 
 function createLocalServerClient(): BuddySocketClient {
