@@ -21,7 +21,7 @@
     "start:tui": "node dist/index.js",
     "start:server": "node dist/index.js server run",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node --import tsx --test src/*.test.ts src/**/*.test.ts"
   },
   "dependencies": {
     "@mariozechner/pi-tui": "^0.62.0",

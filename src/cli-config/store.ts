@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadServerSecretToken } from "../config/store.js";
-import { buddyHome, cliConfigPath, cliHome, cliKeyPath, localWebsocketUrl, serverSecretTokenPath } from "../utils/paths.js";
+import { buddyHome, cliConfigPath, cliHome, cliKeyPath, localWebsocketUrl } from "../utils/paths.js";
 import type { BuddyCliConfig } from "./schema.js";
 
 const defaultCliConfig: BuddyCliConfig = {
@@ -75,24 +75,29 @@ export async function saveCliAuthKey(key: string): Promise<void> {
   });
 }
 
+export async function clearCliAuthKey(): Promise<void> {
+  await ensureCliHome();
+  await fs.rm(cliKeyPath, { force: true });
+}
+
 export async function ensureCliAuthKey(serverUrl: string): Promise<string> {
+  if (isDefaultLocalServerUrl(serverUrl)) {
+    return await loadServerSecretToken();
+  }
+
   const existingKey = await loadCliAuthKey();
   if (existingKey) {
     return existingKey;
   }
 
-  const localServerKey = isDefaultLocalServerUrl(serverUrl) ? await loadServerSecretToken() : null;
   if (!input.isTTY || !output.isTTY) {
     throw new Error(`The CLI auth key is missing. Save it to ${cliKeyPath} and try again.`);
   }
 
   const rl = readline.createInterface({ input, output });
   try {
-    const prompt = localServerKey
-      ? `Enter the buddy server auth key.\nPress Enter to use the local server key from ${serverSecretTokenPath}.\n> `
-      : "Enter the buddy server auth key.\n> ";
-    const answer = (await rl.question(prompt)).trim();
-    const authKey = answer || localServerKey || "";
+    const prompt = "Enter the buddy server auth key.\n> ";
+    const authKey = (await rl.question(prompt)).trim();
 
     if (!authKey) {
       throw new Error("A buddy server auth key is required to continue.");

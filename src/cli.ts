@@ -1,6 +1,7 @@
 import { isDefaultLocalServerUrl, loadCliConfig } from "./cli-config/store.js";
 import { startServerInBackground, getServerStatus, stopServer } from "./server/control.js";
 import { runSocketServer } from "./server/daemon.js";
+import { runOnboarding } from "./onboarding.js";
 import { runChatTui } from "./tui/app.js";
 import { runConfigTui } from "./tui/config-app.js";
 
@@ -53,6 +54,11 @@ async function maybeStartConfiguredLocalServer(): Promise<void> {
 }
 
 export async function runCli(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "onboard") {
+    await runOnboarding();
+    return;
+  }
+
   if (args[0] === "server") {
     await runServerCommand(args[1]);
     return;
