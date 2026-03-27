@@ -11,10 +11,12 @@ import type { ToolRuntimeEvent } from "./runtime.js";
 function createSupervisedRuntime(params?: {
   requestApproval?: () => Promise<boolean>;
   onEvent?: (event: ToolRuntimeEvent) => void;
+  config?: typeof defaultConfig;
 }) {
   return createToolRuntime(
     {
       ...defaultConfig,
+      ...params?.config,
       restrictions: {
         blockedDirectories: [],
         accessLevel: "supervised"
@@ -117,5 +119,117 @@ test("supervised mode allows outside-workspace access after approval", async () 
     assert.match(result.output, /\[file\] secret.txt/);
   } finally {
     await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("web_search returns a config error when the tool is disabled", async () => {
+  const runtime = createSupervisedRuntime({
+    config: {
+      ...defaultConfig,
+      tools: {
+        webSearch: {
+          enabled: false
+        }
+      }
+    }
+  });
+  const result = await runtime.executeTool("web_search", JSON.stringify({ query: "latest TypeScript release" }));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.output, "Web search is disabled in buddy config.");
+});
+
+test("web_search scrapes DuckDuckGo HTML and fetches only the top 3 result pages", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    calls.push(url);
+
+    if (url.startsWith("https://html.duckduckgo.com/html/")) {
+      return new Response(
+        `
+          <html>
+            <body>
+              <a class="result__a" href="https://example.com/one">First result</a>
+              <div class="result__snippet">First snippet</div>
+              <a class="result__a" href="https://example.com/two">Second result</a>
+              <div class="result__snippet">Second snippet</div>
+              <a class="result__a" href="https://example.com/three">Third result</a>
+              <div class="result__snippet">Third snippet</div>
+              <a class="result__a" href="https://example.com/four">Fourth result</a>
+              <div class="result__snippet">Fourth snippet</div>
+            </body>
+          </html>
+        `,
+        {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" }
+        }
+      );
+    }
+
+    if (url === "https://example.com/one") {
+      return new Response(
+        "<html><head><title>One page</title></head><body><main>Alpha body text.</main></body></html>",
+        {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" }
+        }
+      );
+    }
+
+    if (url === "https://example.com/two") {
+      return new Response(
+        "<html><head><title>Two page</title></head><body><article>Beta body text.</article></body></html>",
+        {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" }
+        }
+      );
+    }
+
+    if (url === "https://example.com/three") {
+      return new Response("Gamma body text.", {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof globalThis.fetch;
+
+  try {
+    const runtime = createSupervisedRuntime({
+      config: {
+        ...defaultConfig,
+        tools: {
+          webSearch: {
+            enabled: true
+          }
+        }
+      }
+    });
+
+    const result = await runtime.executeTool("web_search", JSON.stringify({ query: "buddy search" }));
+
+    assert.equal(result.ok, true);
+    assert.match(result.output, /Web search results for "buddy search"/);
+    assert.match(result.output, /First result/);
+    assert.match(result.output, /Second result/);
+    assert.match(result.output, /Third result/);
+    assert.doesNotMatch(result.output, /Fourth result/);
+    assert.match(result.output, /Alpha body text\./);
+    assert.match(result.output, /Beta body text\./);
+    assert.match(result.output, /Gamma body text\./);
+    assert.deepEqual(calls, [
+      "https://html.duckduckgo.com/html/?q=buddy+search",
+      "https://example.com/one",
+      "https://example.com/two",
+      "https://example.com/three"
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

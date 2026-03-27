@@ -31,9 +31,18 @@ export interface RestrictionsConfig {
   accessLevel: AccessLevel;
 }
 
+export interface WebSearchToolConfig {
+  enabled: boolean;
+}
+
+export interface ToolsConfig {
+  webSearch: WebSearchToolConfig;
+}
+
 export interface BuddyConfig {
   providers: ProviderConfig;
   personalization: PersonalizationConfig;
   channels: ChannelsConfig;
   restrictions: RestrictionsConfig;
+  tools: ToolsConfig;
 }
