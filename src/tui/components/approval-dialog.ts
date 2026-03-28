@@ -1,5 +1,6 @@
 import type { Component, SelectItem } from "@mariozechner/pi-tui";
 import { SelectList, Text } from "@mariozechner/pi-tui";
+import type { ToolSourceMetadata } from "../../tools/registry.js";
 import { Frame } from "./frame.js";
 import { selectTheme, theme } from "../theme.js";
 
@@ -55,17 +56,30 @@ export class ApprovalDialog implements Component {
     toolName: string;
     path: string;
     summary: string;
+    reason?: string;
+    source?: ToolSourceMetadata;
     onSelect: (value: "approve" | "deny") => void;
     onCancel: () => void;
   }) {
+    const details = [
+      params.summary,
+      `Path: ${params.path}`,
+      params.source?.kind === "plugin"
+        ? `Plugin: ${params.source.pluginName || params.source.pluginId || "plugin"}`
+        : undefined,
+      params.reason ? `Reason: ${params.reason}` : undefined
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
     this.frame = new Frame(
-      `Approve ${params.toolName}`,
+      `Approve ${params.toolName}${params.source?.kind === "plugin" ? " (plugin)" : ""}`,
       new ApprovalContent({
-        summary: `${params.summary}\n\nPath: ${params.path}`,
+        summary: details,
         onSelect: params.onSelect,
         onCancel: params.onCancel
       }),
-      "Supervised mode requires approval for outside-workspace tool calls."
+      "Buddy needs your approval before this tool action can continue."
     );
   }
 

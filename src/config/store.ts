@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { buddyHome, serverConfigPath, serverSecretTokenPath, workspacePath } from "../utils/paths.js";
+import { buddyHome, pluginsPath, serverConfigPath, serverSecretTokenPath, workspacePath } from "../utils/paths.js";
 import { defaultConfig } from "./defaults.js";
 import type { BuddyConfig } from "./schema.js";
 
@@ -38,6 +38,7 @@ function mergeConfig(input: Partial<BuddyConfig> | undefined): BuddyConfig {
 
 export async function ensureBuddyHome(): Promise<void> {
   await fs.mkdir(buddyHome, { recursive: true });
+  await fs.mkdir(pluginsPath, { recursive: true });
   await fs.mkdir(workspacePath, { recursive: true });
 }
 

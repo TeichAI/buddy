@@ -1,11 +1,17 @@
 {
   "name": "@teichai/buddy",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Terminal-first AI assistant with onboarding, chat UI, and local or remote server support.",
   "license": "MIT",
   "type": "module",
   "bin": {
     "buddy": "dist/index.js"
+  },
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "default": "./dist/plugin.js"
+    }
   },
   "files": [
     "dist",

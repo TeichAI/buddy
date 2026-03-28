@@ -5,132 +5,12 @@ import type {
   ChatCompletionToolMessageParam
 } from "openai/resources/chat/completions";
 import type { BuddyConfig } from "../config/schema.js";
+import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 
 export interface AgentTurnResult {
   messages: ChatCompletionMessageParam[];
   assistantText: string;
-}
-
-const fileToolDefinitions = [
-  {
-    type: "function" as const,
-    function: {
-      name: "read_file",
-      description: "Read a text file from disk before making edits or answering questions about it.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Path to the file to read." }
-        },
-        required: ["path"],
-        additionalProperties: false
-      }
-    }
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "list_directory",
-      description: "List directory contents so you can discover files and folders before reading or editing them.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Directory path to inspect." }
-        },
-        required: ["path"],
-        additionalProperties: false
-      }
-    }
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "write_file",
-      description: "Create or fully replace a file with the provided content.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Path to write." },
-          content: { type: "string", description: "Complete file contents." }
-        },
-        required: ["path", "content"],
-        additionalProperties: false
-      }
-    }
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "edit_file",
-      description: "Edit a file after reading it first. Provide the full new contents.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Path to edit." },
-          newContent: { type: "string", description: "The complete updated file contents." }
-        },
-        required: ["path", "newContent"],
-        additionalProperties: false
-      }
-    }
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "delete_file",
-      description: "Delete a file from disk.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Path to delete." }
-        },
-        required: ["path"],
-        additionalProperties: false
-      }
-    }
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "create_directory",
-      description: "Create a directory. Relative paths are resolved inside the workspace by default.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Directory path to create." }
-        },
-        required: ["path"],
-        additionalProperties: false
-      }
-    }
-  }
-];
-
-function buildToolDefinitions(config: BuddyConfig) {
-  if (!config.tools.webSearch.enabled) {
-    return fileToolDefinitions;
-  }
-
-  return [
-    ...fileToolDefinitions,
-    {
-      type: "function" as const,
-      function: {
-        name: "web_search",
-        description:
-          "Search the web with DuckDuckGo HTML, then fetch and return readable text from the top 3 result pages.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Search query to run on the web." }
-          },
-          required: ["query"],
-          additionalProperties: false
-        }
-      }
-    }
-  ];
 }
 
 function assistantContentToText(content: unknown): string {
@@ -163,8 +43,9 @@ export async function runAgentTurn(params: {
   messages: ChatCompletionMessageParam[];
   userInput: string;
   toolRuntime: ToolRuntime;
+  toolRegistry: ToolRegistry;
 }): Promise<AgentTurnResult> {
-  const { config, toolRuntime, userInput } = params;
+  const { config, toolRuntime, toolRegistry, userInput } = params;
 
   if (!config.providers.baseUrl || !config.providers.apiKey || !config.providers.model) {
     throw new Error("Provider is not fully configured. Run `buddy config` and complete Providers.");
@@ -184,7 +65,7 @@ export async function runAgentTurn(params: {
     const response = await client.chat.completions.create({
       model: config.providers.model,
       messages: workingMessages,
-      tools: buildToolDefinitions(config),
+      tools: toolRegistry.definitions,
       tool_choice: "auto",
       temperature: 0.3
     });

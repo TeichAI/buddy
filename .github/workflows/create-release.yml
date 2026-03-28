@@ -52,8 +52,10 @@ jobs:
             version_changed=true
           fi
 
+          is_prerelease=false
           if [[ "$branch" == "development" ]]; then
             tag="v${current_version}-dev"
+            is_prerelease=true
             previous_tag="$(
               git tag --list 'v*-dev' --sort=-creatordate \
                 | grep -Fxv "$tag" \
@@ -79,6 +81,17 @@ jobs:
             release_action="create"
           fi
 
+          if [[ "$release_action" == "update" && "$version_changed" != "true" ]]; then
+            echo "Release ${tag} already exists and package version is unchanged; leaving it in place."
+            echo "release_action=skip" >> "$GITHUB_OUTPUT"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+            echo "version=${current_version}" >> "$GITHUB_OUTPUT"
+            echo "version_changed=${version_changed}" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ "$release_action" == "create" && "$version_changed" == "true" ]]; then
             echo "Package version changed; creating ${tag}."
           elif [[ "$release_action" == "create" ]]; then
@@ -92,6 +105,7 @@ jobs:
           echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
           echo "version=${current_version}" >> "$GITHUB_OUTPUT"
           echo "version_changed=${version_changed}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         if: steps.release.outputs.release_action != 'skip'
@@ -182,9 +196,15 @@ jobs:
           set -euo pipefail
 
           tag="${{ steps.release.outputs.tag }}"
+          prerelease_flag=()
+          if [[ "${{ steps.release.outputs.is_prerelease }}" == "true" ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
           gh release create "$tag" \
             --title "$tag" \
             --verify-tag \
+            "${prerelease_flag[@]}" \
             --notes-file release-notes.md
 
       - name: Update GitHub release notes
@@ -196,8 +216,14 @@ jobs:
           set -euo pipefail
 
           tag="${{ steps.release.outputs.tag }}"
+          prerelease_flag=()
+          if [[ "${{ steps.release.outputs.is_prerelease }}" == "true" ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
           gh release edit "$tag" \
             --title "$tag" \
+            "${prerelease_flag[@]}" \
             --notes-file release-notes.md
 
       - name: Upload release assets
