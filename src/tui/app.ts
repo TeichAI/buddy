@@ -3,6 +3,7 @@ import { CombinedAutocompleteProvider, ProcessTerminal, TUI, Text } from "@mario
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { BuddyConfig } from "../config/schema.js";
 import { BuddySocketClient } from "../server/client.js";
+import type { ToolSourceMetadata } from "../tools/registry.js";
 import { getCliCurrentConversationId, setCliCurrentConversationId } from "../current/store.js";
 import { ChatLog } from "./components/chat-log.js";
 import { ApprovalDialog } from "./components/approval-dialog.js";
@@ -196,7 +197,8 @@ export async function runChatTui(): Promise<void> {
       path: event.path,
       summary: event.summary,
       status: event.status,
-      output: event.output
+      output: event.output,
+      source: event.source
     });
     tui.requestRender();
   };
@@ -205,12 +207,16 @@ export async function runChatTui(): Promise<void> {
     toolName: string;
     path: string;
     summary: string;
+    reason?: string;
+    source?: ToolSourceMetadata;
   }): Promise<boolean> =>
     new Promise((resolve) => {
       const dialog = new ApprovalDialog({
         toolName: params.toolName,
         path: params.path,
         summary: params.summary,
+        reason: params.reason,
+        source: params.source,
         onSelect: (value) => {
           overlay.hide();
           tui.setFocus(editor);

@@ -1,25 +1,20 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import type { BuddyConfig } from "../config/schema.js";
+import { isBuddyToolDeferredApproval } from "../plugins/sdk.js";
 import { workspacePath } from "../utils/paths.js";
+import type { ToolDisplayMetadata, ToolRegistry, ToolSourceMetadata } from "./registry.js";
 import {
-  createDirectoryTool,
-  createToolContext,
-  deleteFileTool,
-  editFileTool,
-  listDirectoryTool,
-  readFileTool,
-  type ToolContext,
-  writeFileTool
-} from "./file-tools.js";
-import { webSearchTool } from "./web-search.js";
+  isPathBlocked,
+  isPathInsideDirectory,
+  resolvePolicyPath
+} from "./path-utils.js";
 
 export interface ToolApprovalRequest {
   id: string;
   toolName: string;
   path: string;
   summary: string;
+  reason?: string;
+  source?: ToolSourceMetadata;
 }
 
 export type ToolEventStatus =
@@ -36,6 +31,7 @@ export interface ToolRuntimeEvent {
   summary: string;
   status: ToolEventStatus;
   output?: string;
+  source?: ToolSourceMetadata;
 }
 
 export interface ToolRuntimeCallbacks {
@@ -53,154 +49,74 @@ export interface ToolRuntime {
   executeTool(name: string, rawArgs: string, options?: { callId?: string }): Promise<ToolExecutionResult>;
 }
 
-interface ResolvedPolicy {
-  resolvedPath: string;
-  displayPath: string;
-}
-
-const pathToolNames = new Set([
-  "read_file",
-  "write_file",
-  "edit_file",
-  "delete_file",
-  "create_directory",
-  "list_directory"
-]);
-
-function isPathToolName(name: string): boolean {
-  return pathToolNames.has(name);
-}
-
-function expandHome(inputPath: string): string {
-  if (inputPath === "~") {
-    return os.homedir();
-  }
-
-  if (inputPath.startsWith("~/")) {
-    return path.join(os.homedir(), inputPath.slice(2));
-  }
-
-  return inputPath;
-}
-
-function normalizeDir(dirPath: string): string {
-  return path.resolve(expandHome(dirPath));
-}
-
-function isPathInsideDirectory(targetPath: string, directoryPath: string): boolean {
-  const target = path.resolve(targetPath);
-  const directory = path.resolve(directoryPath);
-  return target === directory || target.startsWith(`${directory}${path.sep}`);
-}
-
-async function resolvePolicyPath(targetPath: string): Promise<string> {
-  const absoluteTarget = path.resolve(targetPath);
-  const missingSegments: string[] = [];
-  let currentPath = absoluteTarget;
-
-  while (true) {
-    try {
-      const resolvedExistingPath = await fs.realpath(currentPath);
-      return missingSegments.length > 0
-        ? path.join(resolvedExistingPath, ...missingSegments.reverse())
-        : resolvedExistingPath;
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      if (code !== "ENOENT") {
-        throw error;
-      }
-
-      const parentPath = path.dirname(currentPath);
-      if (parentPath === currentPath) {
-        return absoluteTarget;
-      }
-
-      missingSegments.push(path.basename(currentPath));
-      currentPath = parentPath;
-    }
-  }
-}
-
-async function isPathBlocked(filePath: string, blockedDirectories: string[]): Promise<boolean> {
-  const target = await resolvePolicyPath(filePath);
-  const normalizedBlockedDirectories = await Promise.all(
-    blockedDirectories.map(async (blockedDir) => resolvePolicyPath(normalizeDir(blockedDir)))
-  );
-
-  return normalizedBlockedDirectories.some((blockedDir) => isPathInsideDirectory(target, blockedDir));
-}
-
-function resolveToolPath(inputPath: string): ResolvedPolicy {
-  const expanded = expandHome(inputPath.trim());
-  const resolvedPath = path.isAbsolute(expanded)
-    ? path.resolve(expanded)
-    : path.resolve(workspacePath, expanded);
-
-  return {
-    resolvedPath,
-    displayPath: inputPath.trim() || resolvedPath
-  };
-}
-
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 function parseArguments(rawArgs: string): Record<string, unknown> {
   try {
-    return JSON.parse(rawArgs) as Record<string, unknown>;
+    const parsed = JSON.parse(rawArgs) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Tool arguments must be a JSON object.");
+    }
+
+    return parsed as Record<string, unknown>;
   } catch (error) {
     throw new Error(`Invalid tool arguments: ${stringifyError(error)}`);
   }
 }
 
-function requireString(args: Record<string, unknown>, key: string): string {
-  const value = args[key];
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`Tool argument "${key}" must be a non-empty string.`);
-  }
-  return value;
+function buildFailureEvent(params: {
+  id: string;
+  toolName: string;
+  display: ToolDisplayMetadata;
+  source?: ToolSourceMetadata;
+}): Pick<ToolRuntimeEvent, "id" | "toolName" | "path" | "summary" | "source"> {
+  return {
+    id: params.id,
+    toolName: params.toolName,
+    path: params.display.path,
+    summary: params.display.summary,
+    source: params.source
+  };
 }
 
-function summarizeMutation(toolName: string, displayPath: string, args: Record<string, unknown>): string {
-  if (toolName === "read_file") {
-    return `Read ${displayPath}`;
-  }
+function buildDenialMessage(toolName: string, displayPath: string): string {
+  return `User denied approval for ${toolName} on ${displayPath}.`;
+}
 
-  if (toolName === "write_file") {
-    const content = typeof args.content === "string" ? args.content : "";
-    return `Write ${content.length} chars to ${displayPath}`;
-  }
+async function requestUserApproval(params: {
+  callbacks: ToolRuntimeCallbacks;
+  callId: string;
+  toolName: string;
+  display: ToolDisplayMetadata;
+  source?: ToolSourceMetadata;
+  reason?: string;
+  emit: (event: ToolRuntimeEvent) => void;
+}): Promise<boolean> {
+  params.emit({
+    id: params.callId,
+    toolName: params.toolName,
+    path: params.display.path,
+    summary: params.display.summary,
+    source: params.source,
+    status: "awaiting_approval"
+  });
 
-  if (toolName === "edit_file") {
-    const content = typeof args.newContent === "string" ? args.newContent : "";
-    return `Edit ${displayPath} with ${content.length} chars`;
-  }
-
-  if (toolName === "delete_file") {
-    return `Delete ${displayPath}`;
-  }
-
-  if (toolName === "create_directory") {
-    return `Create directory ${displayPath}`;
-  }
-
-  if (toolName === "list_directory") {
-    return `List ${displayPath}`;
-  }
-
-  if (toolName === "web_search") {
-    const query = typeof args.query === "string" ? args.query : displayPath;
-    return `Search the web for ${query}`;
-  }
-
-  return `${toolName} on ${displayPath}`;
+  return await params.callbacks.requestApproval({
+    id: params.callId,
+    toolName: params.toolName,
+    path: params.display.path,
+    summary: params.display.summary,
+    reason: params.reason,
+    source: params.source
+  });
 }
 
 export function createToolRuntime(
   config: BuddyConfig,
-  callbacks: ToolRuntimeCallbacks,
-  context: ToolContext = createToolContext()
+  registry: ToolRegistry,
+  callbacks: ToolRuntimeCallbacks
 ): ToolRuntime {
   const workspacePolicyPathPromise = resolvePolicyPath(workspacePath);
 
@@ -214,168 +130,206 @@ export function createToolRuntime(
       rawArgs: string,
       options?: { callId?: string }
     ): Promise<ToolExecutionResult> {
+      const callId = options?.callId ?? name;
       let failureEvent:
-        | Pick<ToolRuntimeEvent, "id" | "toolName" | "path" | "summary">
+        | Pick<ToolRuntimeEvent, "id" | "toolName" | "path" | "summary" | "source">
         | undefined;
 
       try {
-        const args = parseArguments(rawArgs);
-        let resolvedPath: string | undefined;
-        let displayPath: string;
-
-        if (isPathToolName(name)) {
-          const rawPath = requireString(args, "path");
-          const resolved = resolveToolPath(rawPath);
-          resolvedPath = resolved.resolvedPath;
-          displayPath = resolved.displayPath;
-        } else if (name === "web_search") {
-          const query = requireString(args, "query");
-          displayPath = `search: ${query}`;
-        } else {
-          displayPath = name;
+        const tool = registry.getTool(name);
+        if (!tool) {
+          emit({
+            id: callId,
+            toolName: name,
+            path: name,
+            summary: name,
+            status: "failed",
+            output: `Unknown tool: ${name}`
+          });
+          return {
+            ok: false,
+            output: `Unknown tool: ${name}`,
+            displayPath: name
+          };
         }
 
-        const callId = options?.callId ?? `${name}:${displayPath}`;
-        const summary = summarizeMutation(name, displayPath, args);
-        failureEvent = { id: callId, toolName: name, path: displayPath, summary };
+        const args = parseArguments(rawArgs);
+        let currentDisplay = tool.summarize(args);
+        failureEvent = buildFailureEvent({
+          id: callId,
+          toolName: name,
+          display: currentDisplay,
+          source: tool.source
+        });
 
-        if (resolvedPath) {
+        const policyTarget = tool.resolvePolicyPath?.(args);
+        if (policyTarget) {
           const workspacePolicyPath = await workspacePolicyPathPromise;
-          const policyPath = await resolvePolicyPath(resolvedPath);
+          const policyPath = await resolvePolicyPath(policyTarget);
 
-          if (await isPathBlocked(resolvedPath, config.restrictions.blockedDirectories)) {
+          if (await isPathBlocked(policyTarget, config.restrictions.blockedDirectories)) {
             emit({
               id: callId,
               toolName: name,
-              path: displayPath,
-              summary,
+              path: currentDisplay.path,
+              summary: currentDisplay.summary,
+              source: tool.source,
               status: "failed",
-              output: `Blocked by guardrails: ${displayPath} is inside a blocked directory.`
+              output: `Blocked by guardrails: ${currentDisplay.path} is inside a blocked directory.`
             });
             return {
               ok: false,
-              output: `Blocked by guardrails: ${displayPath} is inside a blocked directory.`,
-              displayPath
+              output: `Blocked by guardrails: ${currentDisplay.path} is inside a blocked directory.`,
+              displayPath: currentDisplay.path
             };
           }
 
           const outsideWorkspace = !isPathInsideDirectory(policyPath, workspacePolicyPath);
-
           if (config.restrictions.accessLevel === "supervised" && outsideWorkspace) {
-            emit({
-              id: callId,
+            const approved = await requestUserApproval({
+              callbacks,
+              callId,
               toolName: name,
-              path: displayPath,
-              summary,
-              status: "awaiting_approval"
-            });
-
-            const approved = await callbacks.requestApproval({
-              id: callId,
-              toolName: name,
-              path: displayPath,
-              summary
+              display: currentDisplay,
+              source: tool.source,
+              emit
             });
 
             if (!approved) {
+              const output = buildDenialMessage(name, currentDisplay.path);
               emit({
                 id: callId,
                 toolName: name,
-                path: displayPath,
-                summary,
+                path: currentDisplay.path,
+                summary: currentDisplay.summary,
+                source: tool.source,
                 status: "denied",
-                output: `User denied approval for ${name} on ${displayPath}.`
+                output
               });
               return {
                 ok: false,
-                output: `User denied approval for ${name} on ${displayPath}.`,
-                displayPath
+                output,
+                displayPath: currentDisplay.path
               };
             }
           }
         }
 
-        if (name === "web_search" && !config.tools.webSearch.enabled) {
-          emit({
-            id: callId,
+        if (tool.requiresApproval) {
+          const approved = await requestUserApproval({
+            callbacks,
+            callId,
             toolName: name,
-            path: displayPath,
-            summary,
-            status: "failed",
-            output: "Web search is disabled in buddy config."
+            display: currentDisplay,
+            source: tool.source,
+            emit
           });
-          return {
-            ok: false,
-            output: "Web search is disabled in buddy config.",
-            displayPath
-          };
+
+          if (!approved) {
+            const output = buildDenialMessage(name, currentDisplay.path);
+            emit({
+              id: callId,
+              toolName: name,
+              path: currentDisplay.path,
+              summary: currentDisplay.summary,
+              source: tool.source,
+              status: "denied",
+              output
+            });
+            return {
+              ok: false,
+              output,
+              displayPath: currentDisplay.path
+            };
+          }
         }
 
         emit({
           id: callId,
           toolName: name,
-          path: displayPath,
-          summary,
+          path: currentDisplay.path,
+          summary: currentDisplay.summary,
+          source: tool.source,
           status: "running"
         });
 
-        if (name === "read_file") {
-          const output = await readFileTool({ path: resolvedPath! }, context);
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
+        let output = await tool.execute(args, { callId });
+
+        while (isBuddyToolDeferredApproval(output)) {
+          const summary = output.summary.trim();
+          if (!summary) {
+            throw new Error(`Tool "${name}" requested approval without a summary.`);
+          }
+
+          currentDisplay = {
+            path: output.path?.trim() || currentDisplay.path,
+            summary
+          };
+          failureEvent = buildFailureEvent({
+            id: callId,
+            toolName: name,
+            display: currentDisplay,
+            source: tool.source
+          });
+
+          const approved = await requestUserApproval({
+            callbacks,
+            callId,
+            toolName: name,
+            display: currentDisplay,
+            source: tool.source,
+            reason: output.reason,
+            emit
+          });
+
+          if (!approved) {
+            const deniedOutput = buildDenialMessage(name, currentDisplay.path);
+            emit({
+              id: callId,
+              toolName: name,
+              path: currentDisplay.path,
+              summary: currentDisplay.summary,
+              source: tool.source,
+              status: "denied",
+              output: deniedOutput
+            });
+            return {
+              ok: false,
+              output: deniedOutput,
+              displayPath: currentDisplay.path
+            };
+          }
+
+          emit({
+            id: callId,
+            toolName: name,
+            path: currentDisplay.path,
+            summary: currentDisplay.summary,
+            source: tool.source,
+            status: "running"
+          });
+
+          output = await output.continueWith();
         }
 
-        if (name === "list_directory") {
-          const output = await listDirectoryTool({ path: resolvedPath! });
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
-        }
-
-        if (name === "write_file") {
-          const content = requireString(args, "content");
-          const output = await writeFileTool({ path: resolvedPath!, content });
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
-        }
-
-        if (name === "edit_file") {
-          const newContent = requireString(args, "newContent");
-          const output = await editFileTool({ path: resolvedPath!, newContent }, context);
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
-        }
-
-        if (name === "delete_file") {
-          const output = await deleteFileTool({ path: resolvedPath! });
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
-        }
-
-        if (name === "create_directory") {
-          const output = await createDirectoryTool({ path: resolvedPath! });
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
-        }
-
-        if (name === "web_search") {
-          const query = requireString(args, "query");
-          const output = await webSearchTool(query);
-          emit({ id: callId, toolName: name, path: displayPath, summary, status: "completed", output });
-          return { ok: true, output, displayPath };
+        if (typeof output !== "string") {
+          throw new Error(`Tool "${name}" returned an invalid output.`);
         }
 
         emit({
           id: callId,
           toolName: name,
-          path: displayPath,
-          summary,
-          status: "failed",
-          output: `Unknown tool: ${name}`
+          path: currentDisplay.path,
+          summary: currentDisplay.summary,
+          source: tool.source,
+          status: "completed",
+          output
         });
+
         return {
-          ok: false,
-          output: `Unknown tool: ${name}`,
-          displayPath
+          ok: true,
+          output,
+          displayPath: currentDisplay.path
         };
       } catch (error) {
         const message = stringifyError(error);

@@ -3,11 +3,15 @@ import { workspacePath } from "../utils/paths.js";
 
 export type PromptChannel = "local" | "discord";
 
-export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = "local"): string {
+export function buildSystemPrompt(
+  config: BuddyConfig,
+  channel: PromptChannel = "local",
+  availableToolLines?: string[]
+): string {
   const botName = config.personalization.botName || "buddy";
   const userName = config.personalization.userName.trim();
   const instructions = config.personalization.systemInstructions.trim();
-  const availableToolLines = [
+  const toolLines = availableToolLines ?? [
     "- `read_file`: read a file before making decisions about its contents.",
     "- `list_directory`: inspect a directory when you need to discover which files or subdirectories exist.",
     "- `write_file`: create or fully replace a file with provided content.",
@@ -15,12 +19,6 @@ export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = 
     "- `delete_file`: remove a file when explicitly needed.",
     "- `create_directory`: create a directory, including nested directories when needed."
   ];
-
-  if (config.tools.webSearch.enabled) {
-    availableToolLines.push(
-      "- `web_search`: search DuckDuckGo HTML and return readable text from the top three result pages."
-    );
-  }
 
   return [
     `You are ${botName}, a AI assistant that helps the user.`,
@@ -41,7 +39,7 @@ export function buildSystemPrompt(config: BuddyConfig, channel: PromptChannel = 
     "- Do not interpret generic references to 'desktop' as `~/Desktop` unless the user explicitly asks for the Desktop folder or gives a concrete path there.",
     "",
     "Available tools:",
-    ...availableToolLines,
+    ...toolLines,
     "",
     "Tool usage expectations:",
     "- Use `list_directory` when you need to discover filenames or locate files in the workspace instead of guessing names.",
