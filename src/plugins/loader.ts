@@ -1,6 +1,8 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import { registerHooks } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { BuddyPlugin, BuddyTool } from "./sdk.js";
 import { pluginsPath } from "../utils/paths.js";
 
@@ -25,6 +27,65 @@ export interface LoadedPlugin {
   manifestVersion: string;
   plugin: BuddyPlugin;
 }
+
+const buddyPluginModuleUrl = (() => {
+  const candidates = ["../plugin.js", "../plugin.ts"];
+
+  for (const candidate of candidates) {
+    const candidateUrl = new URL(candidate, import.meta.url);
+    if (fsSync.existsSync(fileURLToPath(candidateUrl))) {
+      return candidateUrl.href;
+    }
+  }
+
+  throw new Error("Unable to locate the Buddy plugin SDK module.");
+})();
+
+const registeredPluginDirectories = new Set<string>();
+
+function isWithinDirectory(filePath: string, directoryPath: string): boolean {
+  const relativePath = path.relative(directoryPath, filePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    try {
+      return nextResolve(specifier, context);
+    } catch (error) {
+      if (!context.parentURL?.startsWith("file:")) {
+        throw error;
+      }
+
+      const parentPath = fileURLToPath(context.parentURL);
+      const isPluginModule = [...registeredPluginDirectories].some((directoryPath) =>
+        isWithinDirectory(parentPath, directoryPath)
+      );
+      const isBareSpecifier =
+        !specifier.startsWith(".") &&
+        !specifier.startsWith("/") &&
+        !specifier.startsWith("file:") &&
+        !specifier.startsWith("data:") &&
+        !specifier.startsWith("node:");
+
+      if (!isPluginModule || !isBareSpecifier) {
+        throw error;
+      }
+
+      if (specifier === "@teichai/buddy/plugin") {
+        return {
+          shortCircuit: true,
+          url: buddyPluginModuleUrl
+        };
+      }
+
+      return nextResolve(specifier, {
+        ...context,
+        parentURL: import.meta.url
+      });
+    }
+  }
+});
 
 function requireNonEmptyString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
@@ -155,8 +216,11 @@ async function readPluginPackage(pluginDirectory: string): Promise<{
 }
 
 async function importPlugin(entryPath: string): Promise<unknown> {
-  const stat = await fs.stat(entryPath);
-  const moduleUrl = `${pathToFileURL(entryPath).href}?mtime=${stat.mtimeMs}`;
+  const resolvedEntryPath = await fs.realpath(entryPath);
+  const stat = await fs.stat(resolvedEntryPath);
+  const moduleUrl = `${pathToFileURL(resolvedEntryPath).href}?mtime=${stat.mtimeMs}`;
+  const pluginDirectory = path.dirname(resolvedEntryPath);
+  registeredPluginDirectories.add(pluginDirectory);
   const loaded = (await import(moduleUrl)) as { default?: unknown };
   return loaded.default;
 }

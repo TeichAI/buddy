@@ -78,6 +78,83 @@ test("loadPlugins reads optional plugin metadata from the plugin export", async 
   }
 });
 
+test("loadPlugins resolves the Buddy plugin SDK without a plugin-local node_modules directory", async () => {
+  const pluginDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "buddy-loader-sdk-"));
+
+  try {
+    await writePlugin({
+      pluginDirectory,
+      directoryName: "example",
+      source: `
+        import { definePlugin, defineTool } from "@teichai/buddy/plugin";
+
+        export default definePlugin({
+          id: "example",
+          tools: [
+            defineTool({
+              id: "hello",
+              description: "Say hello.",
+              parameters: { type: "object", additionalProperties: false },
+              summarize() {
+                return "Hello";
+              },
+              async execute() {
+                return "ok";
+              }
+            })
+          ]
+        });
+      `
+    });
+
+    const result = await loadPlugins(pluginDirectory);
+    assert.equal(result.diagnostics.length, 0);
+    assert.equal(result.plugins.length, 1);
+    assert.equal(result.plugins[0]?.plugin.id, "example");
+  } finally {
+    await fs.rm(pluginDirectory, { recursive: true, force: true });
+  }
+});
+
+test("loadPlugins can fall back to Buddy's bundled dependencies for plugin imports", async () => {
+  const pluginDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "buddy-loader-deps-"));
+
+  try {
+    await writePlugin({
+      pluginDirectory,
+      directoryName: "colors",
+      source: `
+        import { definePlugin, defineTool } from "@teichai/buddy/plugin";
+        import chalk from "chalk";
+
+        export default definePlugin({
+          id: "colors",
+          tools: [
+            defineTool({
+              id: "paint",
+              description: "Paint text.",
+              parameters: { type: "object", additionalProperties: false },
+              summarize() {
+                return "Paint";
+              },
+              async execute() {
+                return chalk.green("ok");
+              }
+            })
+          ]
+        });
+      `
+    });
+
+    const result = await loadPlugins(pluginDirectory);
+    assert.equal(result.diagnostics.length, 0);
+    assert.equal(result.plugins.length, 1);
+    assert.equal(await result.plugins[0]?.plugin.tools[0]?.execute({} as never, {}), "ok");
+  } finally {
+    await fs.rm(pluginDirectory, { recursive: true, force: true });
+  }
+});
+
 test("loadPlugins reports invalid metadata and duplicate plugin ids without crashing", async () => {
   const pluginDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "buddy-loader-dupes-"));
 
