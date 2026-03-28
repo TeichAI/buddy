@@ -1,5 +1,6 @@
 import type { Component } from "@mariozechner/pi-tui";
 import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import type { ToolSourceMetadata } from "../../tools/registry.js";
 import { markdownTheme, theme } from "../theme.js";
 import { ToolCard, type ToolCardStatus } from "./tool-card.js";
 
@@ -84,6 +85,7 @@ export class ChatLog extends Container {
     summary: string;
     status: ToolCardStatus;
     output?: string;
+    source?: ToolSourceMetadata;
   }): void {
     const existing = this.toolCards.get(params.id);
     if (existing) {

@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 export const buddyHome = path.join(os.homedir(), ".buddy");
+export const pluginsPath = path.join(buddyHome, "plugins");
 export const serverConfigPath = path.join(buddyHome, "config.json");
 export const currentPath = path.join(buddyHome, "current.json");
 export const conversationsPath = path.join(buddyHome, "conversations");

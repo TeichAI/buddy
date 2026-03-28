@@ -29,6 +29,7 @@ import {
 import { loadConfig } from "../config/store.js";
 import type { DiscordChannelConfig } from "../config/schema.js";
 import { executeChatTurn } from "../server/chat.js";
+import type { ToolSourceMetadata } from "../tools/registry.js";
 import {
   createOrLoadDiscordConversationForTurn,
   getActiveDiscordConversationId,
@@ -105,7 +106,7 @@ const pendingApprovals = new Map<
 
 interface ToolTranscriptState {
   entries: ToolRuntimeEvent[];
-  activeEntryByInvocation: Map<string, number>;
+  activeEntryById: Map<string, number>;
 }
 
 interface StreamingDiscordReply {
@@ -214,25 +215,32 @@ function splitDiscordMessage(content: string, maxLength = 1900): string[] {
 function createToolTranscriptState(): ToolTranscriptState {
   return {
     entries: [],
-    activeEntryByInvocation: new Map()
+    activeEntryById: new Map()
   };
 }
 
+function toolSourceLabel(source?: ToolSourceMetadata): string {
+  if (source?.kind !== "plugin") {
+    return "";
+  }
+
+  return source.pluginName || source.pluginId || "plugin";
+}
+
 function trackToolEvent(state: ToolTranscriptState, event: ToolRuntimeEvent): void {
-  const invocationKey = `${event.id}\u0000${event.toolName}\u0000${event.path}\u0000${event.summary}`;
-  const existingIndex = state.activeEntryByInvocation.get(invocationKey);
+  const existingIndex = state.activeEntryById.get(event.id);
 
   if (existingIndex === undefined) {
     state.entries.push(event);
 
     if (event.status === "running" || event.status === "awaiting_approval") {
-      state.activeEntryByInvocation.set(invocationKey, state.entries.length - 1);
+      state.activeEntryById.set(event.id, state.entries.length - 1);
     }
   } else {
     state.entries[existingIndex] = event;
 
     if (event.status === "completed" || event.status === "denied" || event.status === "failed") {
-      state.activeEntryByInvocation.delete(invocationKey);
+      state.activeEntryById.delete(event.id);
     }
   }
 }
@@ -253,24 +261,27 @@ function summarizeToolFailure(event: ToolRuntimeEvent): string {
 function buildToolTranscriptLines(state: ToolTranscriptState): string[] {
   return state.entries
     .flatMap((event) => {
+      const sourceLabel = toolSourceLabel(event.source);
+      const prefix = sourceLabel ? `[${sourceLabel}] ` : "";
+
       if (event.status === "running") {
-        return [`> Running: ${event.summary}`];
+        return [`> Running: ${prefix}${event.summary}`];
       }
 
       if (event.status === "awaiting_approval") {
-        return [`> Approval needed: ${event.summary}`];
+        return [`> Approval needed: ${prefix}${event.summary}`];
       }
 
       if (event.status === "completed") {
-        return [`> ${event.summary}`];
+        return [`> ${prefix}${event.summary}`];
       }
 
       if (event.status === "denied") {
-        return [`> Denied: ${event.summary}`];
+        return [`> Denied: ${prefix}${event.summary}`];
       }
 
       if (event.status === "failed") {
-        return [`> Failed: ${summarizeToolFailure(event)}`];
+        return [`> Failed: ${prefix}${summarizeToolFailure(event)}`];
       }
 
       return [];
@@ -421,12 +432,25 @@ async function sendApprovalEmbed(params: {
 
   const embed = new EmbedBuilder()
     .setTitle("Tool approval needed")
-    .setDescription("A supervised tool call needs your choice before the chat can continue.")
-    .addFields(
-      { name: "Tool", value: `\`${params.request.toolName}\``, inline: true },
-      { name: "Path", value: `\`${params.request.path}\``, inline: false },
-      { name: "Action", value: params.request.summary, inline: false }
-    );
+    .setDescription("Buddy needs your approval before the chat can continue.")
+    .addFields({ name: "Tool", value: `\`${params.request.toolName}\``, inline: true });
+
+  if (params.request.source?.kind === "plugin") {
+    embed.addFields({
+      name: "Plugin",
+      value: params.request.source.pluginName || params.request.source.pluginId || "plugin",
+      inline: true
+    });
+  }
+
+  embed.addFields(
+    { name: "Path", value: `\`${params.request.path}\``, inline: false },
+    { name: "Action", value: params.request.summary, inline: false }
+  );
+
+  if (params.request.reason) {
+    embed.addFields({ name: "Reason", value: params.request.reason, inline: false });
+  }
 
   const actions = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(approveId).setLabel("Approve").setStyle(ButtonStyle.Success),

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { Container, Text } from "@mariozechner/pi-tui";
+import type { ToolSourceMetadata } from "../../tools/registry.js";
 import { theme } from "../theme.js";
 import { workspacePath } from "../../utils/paths.js";
 
@@ -63,6 +64,14 @@ function previewOutput(status: ToolCardStatus, output?: string): string {
   return collapsed.length > 140 ? `${collapsed.slice(0, 137)}...` : collapsed;
 }
 
+function sourceLabel(source?: ToolSourceMetadata): string {
+  if (source?.kind !== "plugin") {
+    return "";
+  }
+
+  return source.pluginName || source.pluginId || "plugin";
+}
+
 export class ToolCard extends Container {
   private readonly titleText: Text;
   private readonly pathText: Text;
@@ -74,6 +83,7 @@ export class ToolCard extends Container {
     summary: string;
     status: ToolCardStatus;
     output?: string;
+    source?: ToolSourceMetadata;
   }) {
     super();
     this.titleText = new Text("", 0, 0);
@@ -91,6 +101,7 @@ export class ToolCard extends Container {
     summary: string;
     status: ToolCardStatus;
     output?: string;
+    source?: ToolSourceMetadata;
   }): void {
     const statusColor =
       params.status === "completed"
@@ -99,8 +110,11 @@ export class ToolCard extends Container {
           ? theme.error
           : theme.accent;
 
+    const source = sourceLabel(params.source);
     this.titleText.setText(statusColor(`• ${statusLabel(params.status)}`) + theme.text(` ${params.summary}`));
-    this.pathText.setText(theme.muted(`  └ ${compactPath(params.path)}`));
+    this.pathText.setText(
+      theme.muted(`  └ ${compactPath(params.path)}${source ? `   ·   plugin ${source}` : ""}`)
+    );
 
     const preview = previewOutput(params.status, params.output);
     this.outputText.setText(preview ? theme.muted(`    ${preview}`) : "");

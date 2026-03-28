@@ -7,6 +7,12 @@
   "bin": {
     "buddy": "dist/index.js"
   },
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "default": "./dist/plugin.js"
+    }
+  },
   "files": [
     "dist",
     "LICENSE",
