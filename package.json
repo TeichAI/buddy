@@ -1,6 +1,6 @@
 {
   "name": "@teichai/buddy",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Terminal-first AI assistant with onboarding, chat UI, and local or remote server support.",
   "license": "MIT",
   "type": "module",
@@ -16,6 +16,7 @@
   "files": [
     "dist",
     "LICENSE",
+    "docs",
     "README.md"
   ],
   "repository": {
